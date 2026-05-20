@@ -14,12 +14,55 @@ import (
 	"kiro-proxy-go/internal/auth"
 	"kiro-proxy-go/internal/client"
 	"kiro-proxy-go/internal/config"
+	"kiro-proxy-go/internal/daemon"
 	"kiro-proxy-go/internal/handler"
 	"kiro-proxy-go/internal/middleware"
 	"kiro-proxy-go/internal/models"
 )
 
 func main() {
+	// Handle daemon commands
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "start":
+			if err := daemon.Start(); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "stop":
+			if err := daemon.Stop(); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "restart":
+			if err := daemon.Restart(); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "logs":
+			if err := daemon.Logs(); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "run":
+			// Run in foreground (called by daemon mode)
+			runForeground()
+			return
+		case "help", "-h", "--help":
+			printUsage()
+			return
+		}
+	}
+
+	// Default: run in foreground
+	runForeground()
+}
+
+func runForeground() {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -28,9 +71,10 @@ func main() {
 	}
 
 	// CLI flag overrides
-	host := flag.String("host", cfg.Host, "listen host")
-	port := flag.Int("port", cfg.Port, "listen port")
-	flag.Parse()
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	host := fs.String("host", cfg.Host, "listen host")
+	port := fs.Int("port", cfg.Port, "listen port")
+	fs.Parse(os.Args[1:])
 	cfg.Host = *host
 	cfg.Port = *port
 
@@ -135,4 +179,41 @@ func main() {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"ok","version":"0.1.0"}`)
+}
+
+func printUsage() {
+	fmt.Printf(`kiro-proxy-go - Kiro API Proxy
+
+Usage:
+  kiro-proxy-go [command]
+
+Commands:
+  start       Start the proxy as a background daemon
+  stop        Stop the running daemon
+  restart     Restart the daemon
+  logs        View daemon logs (tail -f)
+  run         Run in foreground (default)
+  help        Show this help message
+
+Examples:
+  kiro-proxy-go start              Start as daemon
+  kiro-proxy-go stop               Stop daemon
+  kiro-proxy-go logs               View logs
+  kiro-proxy-go                    Run in foreground
+  kiro-proxy-go run -port 9000     Run on port 9000
+
+Environment Variables:
+  KIRO_CREDS_FILE     Path to kiro-cli credentials file
+  REFRESH_TOKEN       Direct refresh token (alternative to file)
+  KIRO_REGION         Auth region (default: us-east-1)
+  KIRO_API_REGION     API region override
+  PROXY_API_KEY       API key for proxy authentication
+  SERVER_HOST         Listen host (default: 0.0.0.0)
+  SERVER_PORT         Listen port (default: 8000)
+  LOG_LEVEL           Log level: debug, info, warn, error (default: info)
+
+Files:
+  PID:  %s
+  Logs: %s
+`, "/tmp/kiro-proxy-go.pid", daemon.LogFile)
 }
