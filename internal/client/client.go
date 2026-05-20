@@ -77,6 +77,9 @@ func (c *Client) DoStream(method, path string, body io.Reader, getBody func() io
 		// Set Kiro API headers
 		c.setKiroHeaders(req, token)
 
+		// Log request for debugging
+		slog.Debug("Kiro API request", "url", url, "method", method)
+
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("request failed: %w", err)

@@ -282,27 +282,34 @@ func buildHistory(messages []Message, systemPrompt, modelID string) ([]KiroHisto
 	var history []KiroHistoryEntry
 	var currentContent string
 
-	if len(mainMessages) == 0 {
-		// Only tool messages — shouldn't happen but handle gracefully
-		currentContent = "Here are the tool results."
-	} else {
-		// Process all messages except the last user message into history
-		// The last user/tool message becomes the current message
-		lastIdx := len(mainMessages) - 1
-
-		for i := 0; i < lastIdx; i++ {
-			msg := mainMessages[i]
+	// If we have trailing tool messages, ALL main messages go into history
+	// and the current message is just "Continue" with tool results
+	if len(trailingToolMsgs) > 0 {
+		for _, msg := range mainMessages {
 			entry := convertToHistoryEntry(msg, modelID)
 			if entry != nil {
 				history = append(history, *entry)
 			}
 		}
-
-		// Last message becomes current content
-		lastMsg := mainMessages[lastIdx]
-		currentContent = extractTextContent(lastMsg.Content)
-		if currentContent == "" {
-			currentContent = "(empty placeholder)"
+		currentContent = "Continue"
+	} else {
+		// No tool results: last message becomes current, rest go into history
+		if len(mainMessages) == 0 {
+			currentContent = "(empty)"
+		} else {
+			lastIdx := len(mainMessages) - 1
+			for i := 0; i < lastIdx; i++ {
+				msg := mainMessages[i]
+				entry := convertToHistoryEntry(msg, modelID)
+				if entry != nil {
+					history = append(history, *entry)
+				}
+			}
+			lastMsg := mainMessages[lastIdx]
+			currentContent = extractTextContent(lastMsg.Content)
+			if currentContent == "" {
+				currentContent = "(empty placeholder)"
+			}
 		}
 	}
 
@@ -324,11 +331,6 @@ func buildHistory(messages []Message, systemPrompt, modelID string) ([]KiroHisto
 			Status:    "success",
 			ToolUseID: msg.ToolCallID,
 		})
-	}
-
-	// If we have trailing tool messages, the current content should indicate tool results
-	if len(trailingToolMsgs) > 0 && currentContent == "" {
-		currentContent = "Here are the tool results."
 	}
 
 	return history, currentContent, toolResults
@@ -367,6 +369,10 @@ func convertToHistoryEntry(msg Message, modelID string) *KiroHistoryEntry {
 
 	case "assistant":
 		content := extractTextContent(msg.Content)
+		// Kiro API requires non-empty content - use "(empty)" placeholder
+		if content == "" {
+			content = "(empty)"
+		}
 		var toolUses []KiroToolUse
 		for _, tc := range msg.ToolCalls {
 			toolUses = append(toolUses, KiroToolUse{
@@ -383,24 +389,10 @@ func convertToHistoryEntry(msg Message, modelID string) *KiroHistoryEntry {
 		}
 
 	case "tool":
-		// Tool messages in the middle of history become user messages with tool results
-		text := extractTextContent(msg.Content)
-		return &KiroHistoryEntry{
-			UserInputMessage: &KiroUserInputMessage{
-				Content: "Tool result",
-				ModelID: modelID,
-				Origin:  "AI_EDITOR",
-				UserInputMessageContext: &KiroUserInputMsgContext{
-					ToolResults: []KiroToolResult{
-						{
-							Content:   []KiroToolResultContent{{Text: text}},
-							Status:    "success",
-							ToolUseID: msg.ToolCallID,
-						},
-					},
-				},
-			},
-		}
+		// Tool messages should not create separate history entries.
+		// They are handled as trailing messages and become toolResults in the current message.
+		// If a tool message appears in the middle of history, skip it.
+		return nil
 
 	default:
 		return nil
