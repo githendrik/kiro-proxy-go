@@ -1,0 +1,31 @@
+# Kiro Proxy Configuration
+# Copy this file to ~/.config/kiro-proxy/config.yaml
+
+# Server settings
+host: 0.0.0.0
+port: 8000
+
+# Proxy authentication
+proxy_api_key: my-super-secret-password-123
+
+# Kiro credentials (use ONE of these methods)
+# Method 1: Credentials file (recommended)
+creds_file: ~/.aws/sso/cache/kiro-auth-token-cli.json
+
+# Method 2: Direct refresh token
+# refresh_token: your-refresh-token-here
+
+# Region settings
+region: us-east-1          # Auth region
+# api_region: us-east-1   # API region (defaults to region if not set)
+
+# Timeouts
+streaming_read_timeout: 300  # seconds
+max_retries: 3
+
+# Features
+fake_reasoning: true
+fake_reasoning_max_tokens: 4000
+
+# Logging
+log_level: info  # debug, info, warn, error

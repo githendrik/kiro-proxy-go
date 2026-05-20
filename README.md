@@ -45,11 +45,43 @@ Download from [GitHub Releases](https://github.com/githendrik/kiro-proxy-go/rele
 
 ## Configuration
 
+### Config File (Recommended)
+
+Create `~/.config/kiro-proxy/config.yaml`:
+
+```bash
+mkdir -p ~/.config/kiro-proxy
+cp config.example.yaml ~/.config/kiro-proxy/config.yaml
+# Edit the file with your settings
+```
+
+**Example config:**
+```yaml
+# Credentials (use one method)
+creds_file: ~/.aws/sso/cache/kiro-auth-token-cli.json
+# refresh_token: your-refresh-token-here
+
+# Server
+host: 0.0.0.0
+port: 8000
+
+# Proxy auth
+proxy_api_key: your-secret-key
+
+# Region
+region: us-east-1
+
+# Logging
+log_level: info
+```
+
 ### Environment Variables
+
+Environment variables override config file settings.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `KIRO_CREDS_FILE` | Path to kiro-cli credentials file | `~/.aws/sso/cache/kiro-auth-token-cli.json` |
+| `KIRO_CREDS_FILE` | Path to kiro-cli credentials file | - |
 | `REFRESH_TOKEN` | Direct refresh token (alternative to file) | - |
 | `KIRO_REGION` | Auth region | `us-east-1` |
 | `KIRO_API_REGION` | API region override | - |
@@ -58,14 +90,15 @@ Download from [GitHub Releases](https://github.com/githendrik/kiro-proxy-go/rele
 | `SERVER_PORT` | Listen port | `8000` |
 | `LOG_LEVEL` | Log level (debug, info, warn, error) | `info` |
 
-### Example .env File
+### Config File Locations
 
-```bash
-KIRO_CREDS_FILE=~/.aws/sso/cache/kiro-auth-token-cli.json
-KIRO_REGION=us-east-1
-PROXY_API_KEY=your-secret-key
-SERVER_PORT=8000
-```
+The proxy searches for config files in this order:
+1. `./kiro-proxy.yaml` (current directory)
+2. `~/.config/kiro-proxy/config.yaml` (recommended)
+3. `~/.kiro-proxy.yaml`
+4. `/etc/kiro-proxy/config.yaml`
+
+Environment variables always take precedence over config file values.
 
 ## Daemon Commands
 

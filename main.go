@@ -79,7 +79,7 @@ func runForeground() {
 	cfg.Port = *port
 
 	// Setup structured logging
-	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
+	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevelSlog})
 	slog.SetDefault(slog.New(logHandler))
 
 	slog.Info("starting kiro-proxy",

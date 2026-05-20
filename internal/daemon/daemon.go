@@ -214,7 +214,45 @@ func checkCredentials() error {
 			return fmt.Errorf("credentials file not found: %s", expanded)
 		}
 	}
+	
+	// Also check config file location
+	if credsFile == "" {
+		configFile := findConfigFile()
+		if configFile != "" {
+			// Config file exists, credentials will be validated by main process
+			return nil
+		}
+	}
+	
 	return nil
+}
+
+// findConfigFile searches for a config file in standard locations.
+func findConfigFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+
+	locations := []string{
+		"kiro-proxy.yaml",
+		"kiro-proxy.yml",
+	}
+
+	if home != "" {
+		locations = append(locations,
+			filepath.Join(home, ".config", "kiro-proxy", "config.yaml"),
+			filepath.Join(home, ".config", "kiro-proxy", "config.yml"),
+		)
+	}
+
+	for _, loc := range locations {
+		if _, err := os.Stat(loc); err == nil {
+			return loc
+		}
+	}
+
+	return ""
 }
 
 // expandPath expands ~ to home directory.
