@@ -29,7 +29,6 @@ type Config struct {
 	KiroAPIHost string
 
 	// Timeouts
-	FirstTokenTimeout    int // seconds
 	StreamingReadTimeout int // seconds
 	MaxRetries           int
 
@@ -54,7 +53,6 @@ func Load() (*Config, error) {
 		RefreshToken:           getEnv("REFRESH_TOKEN", ""),
 		Region:                 getEnv("KIRO_REGION", "us-east-1"),
 		APIRegion:              getEnv("KIRO_API_REGION", ""),
-		FirstTokenTimeout:      getEnvInt("FIRST_TOKEN_TIMEOUT", 15),
 		StreamingReadTimeout:   getEnvInt("STREAMING_READ_TIMEOUT", 300),
 		MaxRetries:             getEnvInt("MAX_RETRIES", 3),
 		FakeReasoning:          getEnvBool("FAKE_REASONING", true),
