@@ -33,3 +33,4 @@ go.work.sum
 
 # Build output
 kiro-proxy-go
+kiro-proxy
