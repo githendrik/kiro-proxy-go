@@ -108,7 +108,7 @@ func runForeground() {
 	slog.Info("authentication successful")
 
 	// Update API host from creds file region if no explicit API region override
-	if cfg.CredsFile != "" && os.Getenv("KIRO_API_REGION") == "" {
+	if cfg.CredsFile != "" && !cfg.APIRegionSet {
 		if fileRegion := authManager.FileRegion(); fileRegion != "" && fileRegion != cfg.APIRegion {
 			cfg.APIRegion = fileRegion
 			cfg.KiroAPIHost = fmt.Sprintf("https://runtime.%s.kiro.dev", cfg.APIRegion)

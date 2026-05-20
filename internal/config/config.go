@@ -39,8 +39,9 @@ type Config struct {
 	LogLevel string `yaml:"log_level,omitempty"`
 
 	// Derived fields (not from config file)
-	KiroAPIHost string
-	LogLevelSlog slog.Level
+	KiroAPIHost     string
+	LogLevelSlog    slog.Level
+	APIRegionSet    bool // tracks if api_region was explicitly set in config
 }
 
 // DefaultConfig returns a config with default values.
@@ -140,6 +141,7 @@ func (c *Config) loadFromFile(path string) error {
 	}
 	if raw.APIRegion != "" {
 		c.APIRegion = raw.APIRegion
+		c.APIRegionSet = true
 	}
 	if raw.StreamingReadTimeout != 0 {
 		c.StreamingReadTimeout = raw.StreamingReadTimeout
@@ -182,6 +184,7 @@ func (c *Config) overrideFromEnv() {
 	}
 	if v := os.Getenv("KIRO_API_REGION"); v != "" {
 		c.APIRegion = v
+		c.APIRegionSet = true
 	}
 	if v := os.Getenv("STREAMING_READ_TIMEOUT"); v != "" {
 		c.StreamingReadTimeout, _ = strconv.Atoi(v)
