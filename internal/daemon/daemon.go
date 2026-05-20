@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	PIDFile  = "/tmp/kiro-proxy-go.pid"
+	PIDFile  = "/tmp/kiro-proxy.pid"
 	Shutdown = 10 * time.Second
 )
 
@@ -24,16 +24,16 @@ func init() {
 	// Set log file to user-writable location
 	home, err := os.UserHomeDir()
 	if err != nil {
-		LogFile = "/tmp/kiro-proxy-go.log"
+		LogFile = "/tmp/kiro-proxy.log"
 		return
 	}
 	
 	// Try ~/.local/state first (XDG spec), fallback to ~
 	logDir := filepath.Join(home, ".local", "state")
 	if err := os.MkdirAll(logDir, 0755); err == nil {
-		LogFile = filepath.Join(logDir, "kiro-proxy-go.log")
+		LogFile = filepath.Join(logDir, "kiro-proxy.log")
 	} else {
-		LogFile = filepath.Join(home, "kiro-proxy-go.log")
+		LogFile = filepath.Join(home, "kiro-proxy.log")
 	}
 }
 

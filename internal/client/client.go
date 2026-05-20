@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"kiro-proxy-go/internal/auth"
+	"kiro-proxy/internal/auth"
 )
 
 // Client wraps HTTP calls to the Kiro API with retry logic.

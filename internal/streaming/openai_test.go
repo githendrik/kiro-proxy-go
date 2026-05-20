@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"kiro-proxy-go/internal/parser"
+	"kiro-proxy/internal/parser"
 )
 
 func TestStreamConverter_ContentEvent(t *testing.T) {

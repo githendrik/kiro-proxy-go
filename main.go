@@ -11,13 +11,13 @@ import (
 	"syscall"
 	"time"
 
-	"kiro-proxy-go/internal/auth"
-	"kiro-proxy-go/internal/client"
-	"kiro-proxy-go/internal/config"
-	"kiro-proxy-go/internal/daemon"
-	"kiro-proxy-go/internal/handler"
-	"kiro-proxy-go/internal/middleware"
-	"kiro-proxy-go/internal/models"
+	"kiro-proxy/internal/auth"
+	"kiro-proxy/internal/client"
+	"kiro-proxy/internal/config"
+	"kiro-proxy/internal/daemon"
+	"kiro-proxy/internal/handler"
+	"kiro-proxy/internal/middleware"
+	"kiro-proxy/internal/models"
 )
 
 func main() {
@@ -82,7 +82,7 @@ func runForeground() {
 	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
 	slog.SetDefault(slog.New(logHandler))
 
-	slog.Info("starting kiro-proxy-go",
+	slog.Info("starting kiro-proxy",
 		"host", cfg.Host,
 		"port", cfg.Port,
 		"region", cfg.Region,
@@ -182,10 +182,10 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func printUsage() {
-	fmt.Printf(`kiro-proxy-go - Kiro API Proxy
+	fmt.Printf(`kiro-proxy - Kiro API Proxy
 
 Usage:
-  kiro-proxy-go [command]
+  kiro-proxy [command]
 
 Commands:
   start       Start the proxy as a background daemon
@@ -196,11 +196,11 @@ Commands:
   help        Show this help message
 
 Examples:
-  kiro-proxy-go start              Start as daemon
-  kiro-proxy-go stop               Stop daemon
-  kiro-proxy-go logs               View logs
-  kiro-proxy-go                    Run in foreground
-  kiro-proxy-go run -port 9000     Run on port 9000
+  kiro-proxy start              Start as daemon
+  kiro-proxy stop               Stop daemon
+  kiro-proxy logs               View logs
+  kiro-proxy                    Run in foreground
+  kiro-proxy run -port 9000     Run on port 9000
 
 Environment Variables:
   KIRO_CREDS_FILE     Path to kiro-cli credentials file
@@ -215,5 +215,5 @@ Environment Variables:
 Files:
   PID:  %s
   Logs: %s
-`, "/tmp/kiro-proxy-go.pid", daemon.LogFile)
+`, "/tmp/kiro-proxy.pid", daemon.LogFile)
 }

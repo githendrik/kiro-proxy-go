@@ -1,6 +1,6 @@
 version: 2
 
-project_name: kiro-proxy-go
+project_name: kiro-proxy
 
 before:
   hooks:
@@ -15,7 +15,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    binary: kiro-proxy-go
+    binary: kiro-proxy
     ldflags:
       - -s -w
 
@@ -64,7 +64,7 @@ release:
     - glob: LICENSE
 
 brews:
-  - name: kiro-proxy-go
+  - name: kiro-proxy
     homepage: https://github.com/githendrik/kiro-proxy-go
     description: "Kiro API Proxy - OpenAI-compatible proxy for Kiro"
     license: "MIT"
@@ -77,7 +77,7 @@ brews:
       email: bot@goreleaser.com
     directory: Formula
     install: |
-      bin.install "kiro-proxy-go"
+      bin.install "kiro-proxy"
     test: |
-      system "#{bin}/kiro-proxy-go", "--help"
+      system "#{bin}/kiro-proxy", "--help"
     skip_upload: auto

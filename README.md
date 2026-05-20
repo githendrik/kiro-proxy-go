@@ -1,4 +1,4 @@
-# Kiro Proxy Go
+# Kiro Proxy
 
 OpenAI-compatible API proxy for Amazon Kiro.
 
@@ -8,7 +8,7 @@ OpenAI-compatible API proxy for Amazon Kiro.
 
 ```bash
 brew tap githendrik/tap
-brew install kiro-proxy-go
+brew install kiro-proxy
 ```
 
 ### From Source
@@ -30,17 +30,17 @@ Download from [GitHub Releases](https://github.com/githendrik/kiro-proxy-go/rele
 
 2. **Start the proxy:**
    ```bash
-   kiro-proxy-go start
+   kiro-proxy start
    ```
 
 3. **View logs:**
    ```bash
-   kiro-proxy-go logs
+   kiro-proxy logs
    ```
 
 4. **Stop the proxy:**
    ```bash
-   kiro-proxy-go stop
+   kiro-proxy stop
    ```
 
 ## Configuration
@@ -103,13 +103,13 @@ print(response.choices[0].message.content)
 ### Build
 
 ```bash
-go build -o kiro-proxy-go .
+go build -o kiro-proxy .
 ```
 
 ### Run in Foreground
 
 ```bash
-./kiro-proxy-go run
+./kiro-proxy run
 ```
 
 ### Release

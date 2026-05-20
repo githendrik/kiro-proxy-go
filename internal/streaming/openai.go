@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"kiro-proxy-go/internal/parser"
+	"kiro-proxy/internal/parser"
 )
 
 // OpenAI SSE response types

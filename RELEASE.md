@@ -9,7 +9,7 @@ Create a new GitHub repository named `homebrew-tap`:
 ```bash
 # Go to https://github.com/new
 # Repository name: homebrew-tap
-# Description: Homebrew tap for kiro-proxy-go
+# Description: Homebrew tap for kiro-proxy
 # Public
 # Create repository
 ```
@@ -69,9 +69,9 @@ Copy the formula to your tap repository:
 
 ```bash
 cd /path/to/homebrew-tap
-cp /path/to/kiro-proxy-go/Formula/kiro-proxy-go.rb Formula/
+cp /path/to/kiro-proxy-go/Formula/kiro-proxy.rb Formula/
 git add Formula/
-git commit -m "Add kiro-proxy-go formula"
+git commit -m "Add kiro-proxy formula"
 git push origin main
 ```
 
@@ -97,7 +97,7 @@ GitHub Actions will automatically:
 1. Check the **Actions** tab in your repository
 2. Wait for the "Release" workflow to complete
 3. Verify the release at: https://github.com/githendrik/kiro-proxy-go/releases
-4. Verify the formula was updated in: https://github.com/githendrik/homebrew-tap/blob/main/Formula/kiro-proxy-go.rb
+4. Verify the formula was updated in: https://github.com/githendrik/homebrew-tap/blob/main/Formula/kiro-proxy.rb
 
 ## Installation (End Users)
 
@@ -106,10 +106,10 @@ GitHub Actions will automatically:
 brew tap githendrik/tap
 
 # Install
-brew install kiro-proxy-go
+brew install kiro-proxy
 
 # Upgrade when new release
-brew upgrade kiro-proxy-go
+brew upgrade kiro-proxy
 ```
 
 ## Testing Local Release
@@ -146,6 +146,6 @@ GoReleaser automatically calculates and updates the SHA256. If there's a mismatc
 
 Verify the formula installs to the correct path:
 ```bash
-brew info kiro-proxy-go
-which kiro-proxy-go
+brew info kiro-proxy
+which kiro-proxy
 ```

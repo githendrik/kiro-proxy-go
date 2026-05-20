@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"kiro-proxy-go/internal/client"
+	"kiro-proxy/internal/client"
 )
 
 // Resolver handles model name normalization, aliases, and caching.

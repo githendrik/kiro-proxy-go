@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"time"
 
-	"kiro-proxy-go/internal/auth"
-	"kiro-proxy-go/internal/client"
-	"kiro-proxy-go/internal/config"
-	"kiro-proxy-go/internal/converter"
-	"kiro-proxy-go/internal/models"
-	"kiro-proxy-go/internal/parser"
-	"kiro-proxy-go/internal/streaming"
+	"kiro-proxy/internal/auth"
+	"kiro-proxy/internal/client"
+	"kiro-proxy/internal/config"
+	"kiro-proxy/internal/converter"
+	"kiro-proxy/internal/models"
+	"kiro-proxy/internal/parser"
+	"kiro-proxy/internal/streaming"
 )
 
 // OpenAIHandler handles OpenAI-compatible API endpoints.
