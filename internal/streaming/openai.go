@@ -142,6 +142,11 @@ func NewStreamConverter(model, requestID string, fakeReasoning bool) *StreamConv
 func (sc *StreamConverter) ProcessEvent(event parser.Event) []string {
 	switch event.Type {
 	case "content":
+		// Native thinking events from Kiro API (thinkingContent field)
+		// should be emitted directly as reasoning_content, bypassing the tag parser.
+		if event.IsThinking {
+			return sc.emitReasoning(event.Content)
+		}
 		return sc.processContent(event.Content)
 	case "tool_use":
 		return sc.processToolUse(event.ToolUse)
