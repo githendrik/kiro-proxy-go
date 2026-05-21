@@ -79,7 +79,12 @@ func runForeground() {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	host := fs.String("host", cfg.Host, "listen host")
 	port := fs.Int("port", cfg.Port, "listen port")
-	fs.Parse(os.Args[1:])
+	// Skip "run" subcommand if present
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "run" {
+		args = args[1:]
+	}
+	fs.Parse(args)
 	cfg.Host = *host
 	cfg.Port = *port
 
