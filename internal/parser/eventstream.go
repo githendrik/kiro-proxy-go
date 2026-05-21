@@ -3,6 +3,7 @@ package parser
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Event represents a parsed event from the Kiro API stream.
@@ -40,6 +41,24 @@ func NewParser() *Parser {
 	return &Parser{}
 }
 
+// Known JSON patterns that indicate the start of a valid Kiro API event.
+// We scan for these instead of any '{' to avoid false positives from
+// binary AWS Event Stream framing bytes.
+var eventPatterns = []string{
+	`{"content":`,
+	`{"thinkingContent":`,
+	`{"name":`,
+	`{"input":`,
+	`{"stop":`,
+	`{"toolUseId":`,
+	`{"followupPrompt":`,
+	`{"usage":`,
+	`{"contextUsagePercentage":`,
+	`{"conversationId":`,
+	`{"modelId":`,
+	`{"error":`,
+}
+
 // Feed adds data to the parser buffer and returns any complete events.
 func (p *Parser) Feed(data []byte) ([]Event, error) {
 	// Decode as UTF-8, ignoring invalid bytes (AWS Event Stream binary framing)
@@ -47,27 +66,37 @@ func (p *Parser) Feed(data []byte) ([]Event, error) {
 
 	var events []Event
 
-	// Find JSON objects in the buffer
+	// Find JSON objects in the buffer by looking for known event patterns
 	for {
-		// Find start of JSON object
+		// Find the earliest known JSON pattern in the buffer
 		start := -1
-		for i := 0; i < len(p.buffer); i++ {
-			if p.buffer[i] == '{' {
-				start = i
-				break
+		for _, pattern := range eventPatterns {
+			idx := strings.Index(p.buffer, pattern)
+			if idx != -1 && (start == -1 || idx < start) {
+				start = idx
 			}
 		}
 
 		if start == -1 {
-			// No JSON found, clear buffer
-			p.buffer = ""
+			// No known pattern found. Keep only the tail of the buffer
+			// in case a pattern is split across chunks.
+			// Keep enough to match the longest pattern.
+			maxPatternLen := 0
+			for _, pattern := range eventPatterns {
+				if len(pattern) > maxPatternLen {
+					maxPatternLen = len(pattern)
+				}
+			}
+			if len(p.buffer) > maxPatternLen {
+				p.buffer = p.buffer[len(p.buffer)-maxPatternLen:]
+			}
 			break
 		}
 
 		// Find matching closing brace
 		end := findMatchingBrace(p.buffer, start)
 		if end == -1 {
-			// Incomplete JSON, keep in buffer
+			// Incomplete JSON, keep from start position in buffer
 			p.buffer = p.buffer[start:]
 			break
 		}
