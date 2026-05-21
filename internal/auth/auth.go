@@ -171,20 +171,35 @@ func (m *Manager) GetAccessToken() (string, error) {
 
 	slog.Info("refreshing access token")
 
-	// Use OIDC flow if we have clientId/clientSecret, otherwise use Desktop Auth
-	var token, newRefreshToken, profileARN string
-	var expiresAt time.Time
-	var err error
+	token, expiresAt, newRefreshToken, profileARN, err := m.doRefresh()
 
-	if m.clientID != "" && m.clientSecret != "" {
-		slog.Debug("using AWS SSO OIDC refresh flow")
-		token, expiresAt, newRefreshToken, profileARN, err = m.doOIDCRefresh()
-	} else {
-		slog.Debug("using Kiro Desktop Auth refresh flow")
-		token, expiresAt, newRefreshToken, profileARN, err = m.doDesktopRefresh()
+	// If refresh failed and we're in file mode, re-read the creds file and retry once.
+	// This handles the case where another process (e.g. kiro-cli or another proxy)
+	// rotated the refresh token, making our in-memory copy stale.
+	if err != nil && m.credsFilePath != "" {
+		slog.Warn("token refresh failed, re-reading credentials file and retrying once", "error", err)
+		creds, readErr := m.loadCredsFile()
+		if readErr == nil && creds.RefreshToken != "" && creds.RefreshToken != m.refreshToken {
+			slog.Info("credentials file has a newer refresh token, retrying refresh")
+			m.refreshToken = creds.RefreshToken
+			if creds.Region != "" {
+				m.fileRegion = creds.Region
+			}
+			if creds.ProfileARN != "" {
+				m.profileARN = creds.ProfileARN
+			}
+			token, expiresAt, newRefreshToken, profileARN, err = m.doRefresh()
+		}
 	}
 
+	// Graceful degradation: if refresh still fails but we have an access token
+	// that hasn't actually expired yet, use it as a fallback.
 	if err != nil {
+		if m.accessToken != "" && time.Until(m.expiresAt) > 0 {
+			slog.Warn("token refresh failed but current access token is still valid, using it as fallback",
+				"error", err, "expires_at", m.expiresAt.Format(time.RFC3339))
+			return m.accessToken, nil
+		}
 		return "", fmt.Errorf("token refresh failed: %w", err)
 	}
 
@@ -203,6 +218,16 @@ func (m *Manager) GetAccessToken() (string, error) {
 
 	slog.Info("token refreshed", "expires_at", expiresAt.Format(time.RFC3339))
 	return m.accessToken, nil
+}
+
+// doRefresh routes to the correct refresh flow based on available credentials.
+func (m *Manager) doRefresh() (accessToken string, expiresAt time.Time, newRefreshToken string, profileARN string, err error) {
+	if m.clientID != "" && m.clientSecret != "" {
+		slog.Debug("using AWS SSO OIDC refresh flow")
+		return m.doOIDCRefresh()
+	}
+	slog.Debug("using Kiro Desktop Auth refresh flow")
+	return m.doDesktopRefresh()
 }
 
 // doDesktopRefresh calls the Kiro Desktop Auth refresh endpoint.
