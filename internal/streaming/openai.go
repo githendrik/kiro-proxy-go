@@ -106,6 +106,21 @@ const (
 	ThinkingDone                 // after </thinking>, now in content
 )
 
+// thinkingTagPair represents an opening and closing tag for thinking blocks.
+type thinkingTagPair struct {
+	Open  string
+	Close string
+}
+
+// supportedThinkingTags lists all recognized thinking tag variants.
+// Matches the Python reference: <thinking>, <think>, <reasoning>, <thought>
+var supportedThinkingTags = []thinkingTagPair{
+	{"<thinking>", "</thinking>"},
+	{"<think>", "</think>"},
+	{"<reasoning>", "</reasoning>"},
+	{"<thought>", "</thought>"},
+}
+
 // StreamConverter converts Kiro event stream to OpenAI SSE chunks.
 type StreamConverter struct {
 	model         string
@@ -114,6 +129,7 @@ type StreamConverter struct {
 	fakeReasoning bool
 
 	thinkingState  ThinkingState
+	matchedTag     *thinkingTagPair // which tag pair was matched for the current thinking block
 	contentBuffer  strings.Builder
 	toolCalls      map[string]*accumulatedToolCall
 	toolCallOrder  []string
@@ -212,11 +228,20 @@ func (sc *StreamConverter) processWithThinking(content string) []string {
 	for {
 		switch sc.thinkingState {
 		case ThinkingNone:
-			// Look for <thinking> tag
-			idx := strings.Index(buffered, "<thinking>")
-			if idx == -1 {
+			// Look for any supported opening tag
+			bestIdx := -1
+			var bestTag *thinkingTagPair
+			for i := range supportedThinkingTags {
+				idx := strings.Index(buffered, supportedThinkingTags[i].Open)
+				if idx != -1 && (bestIdx == -1 || idx < bestIdx) {
+					bestIdx = idx
+					bestTag = &supportedThinkingTags[i]
+				}
+			}
+
+			if bestIdx == -1 {
 				// Check if we might be in the middle of a tag
-				if strings.HasSuffix(buffered, "<") || containsPartialTag(buffered, "<thinking>") {
+				if hasPartialThinkingTag(buffered) {
 					// Hold buffer, wait for more data
 					sc.contentBuffer.Reset()
 					sc.contentBuffer.WriteString(buffered)
@@ -232,18 +257,20 @@ func (sc *StreamConverter) processWithThinking(content string) []string {
 			}
 
 			// Emit any content before the tag
-			if idx > 0 {
-				chunks = append(chunks, sc.emitContent(buffered[:idx])...)
+			if bestIdx > 0 {
+				chunks = append(chunks, sc.emitContent(buffered[:bestIdx])...)
 			}
-			buffered = buffered[idx+len("<thinking>"):]
+			buffered = buffered[bestIdx+len(bestTag.Open):]
+			sc.matchedTag = bestTag
 			sc.thinkingState = ThinkingActive
 
 		case ThinkingActive:
-			// Look for </thinking> tag
-			idx := strings.Index(buffered, "</thinking>")
+			// Look for the matching closing tag
+			closeTag := sc.matchedTag.Close
+			idx := strings.Index(buffered, closeTag)
 			if idx == -1 {
 				// Check for partial closing tag
-				if containsPartialTag(buffered, "</thinking>") {
+				if containsPartialTag(buffered, closeTag) {
 					sc.contentBuffer.Reset()
 					sc.contentBuffer.WriteString(buffered)
 					return chunks
@@ -261,11 +288,11 @@ func (sc *StreamConverter) processWithThinking(content string) []string {
 			if idx > 0 {
 				chunks = append(chunks, sc.emitReasoning(buffered[:idx])...)
 			}
-			buffered = buffered[idx+len("</thinking>"):]
+			buffered = buffered[idx+len(closeTag):]
 			sc.thinkingState = ThinkingDone
 
 		case ThinkingDone:
-			// Everything after </thinking> is regular content
+			// Everything after closing tag is regular content
 			if buffered != "" {
 				// Strip leading newlines after thinking block
 				buffered = strings.TrimLeft(buffered, "\n")
@@ -278,6 +305,17 @@ func (sc *StreamConverter) processWithThinking(content string) []string {
 			return chunks
 		}
 	}
+}
+
+// hasPartialThinkingTag checks if the buffer ends with a partial match
+// of any supported thinking opening tag.
+func hasPartialThinkingTag(s string) bool {
+	for _, tag := range supportedThinkingTags {
+		if containsPartialTag(s, tag.Open) {
+			return true
+		}
+	}
+	return strings.HasSuffix(s, "<")
 }
 
 // containsPartialTag checks if the end of s could be the start of tag.
@@ -565,21 +603,26 @@ func CollectResponse(body io.Reader, model, requestID string, fakeReasoning bool
 }
 
 // extractThinking separates thinking content from regular content.
+// Supports all recognized thinking tag variants.
 func extractThinking(content string) (thinking, regular string) {
-	startIdx := strings.Index(content, "<thinking>")
-	if startIdx == -1 {
-		return "", content
+	for _, tag := range supportedThinkingTags {
+		startIdx := strings.Index(content, tag.Open)
+		if startIdx == -1 {
+			continue
+		}
+
+		endIdx := strings.Index(content, tag.Close)
+		if endIdx == -1 {
+			// Unclosed thinking tag - treat everything after as thinking
+			return content[startIdx+len(tag.Open):], content[:startIdx]
+		}
+
+		thinking = content[startIdx+len(tag.Open) : endIdx]
+		regular = content[:startIdx] + strings.TrimLeft(content[endIdx+len(tag.Close):], "\n")
+		return thinking, regular
 	}
 
-	endIdx := strings.Index(content, "</thinking>")
-	if endIdx == -1 {
-		// Unclosed thinking tag - treat everything after as thinking
-		return content[startIdx+len("<thinking>"):], content[:startIdx]
-	}
-
-	thinking = content[startIdx+len("<thinking>") : endIdx]
-	regular = content[:startIdx] + strings.TrimLeft(content[endIdx+len("</thinking>"):], "\n")
-	return thinking, regular
+	return "", content
 }
 
 // formatSSE formats a chunk as an SSE data line.

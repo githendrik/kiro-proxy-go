@@ -186,10 +186,132 @@ func TestStreamConverter_FlushBufferSuppressedAfterContent(t *testing.T) {
 	// Emit regular content first (bypassing fake reasoning)
 	sc.sentContent = true
 	sc.thinkingState = ThinkingActive
+	sc.matchedTag = &supportedThinkingTags[0]
 	sc.contentBuffer.WriteString("some leftover thinking")
 
 	chunks := sc.FlushBuffer()
 	if len(chunks) != 0 {
 		t.Errorf("Expected FlushBuffer to suppress thinking after content, got %d chunks", len(chunks))
+	}
+}
+
+func TestStreamConverter_ThinkTagVariant(t *testing.T) {
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", true)
+
+	event := parser.Event{
+		Type:    "content",
+		Content: "<think>Let me reason</think>The answer is 42.",
+	}
+
+	chunks := sc.ProcessEvent(event)
+	if len(chunks) == 0 {
+		t.Fatal("Expected chunks to be generated")
+	}
+
+	// Should have reasoning_content and content chunks
+	hasReasoning := false
+	hasContent := false
+	for _, chunk := range chunks {
+		if strings.Contains(chunk, "reasoning_content") && strings.Contains(chunk, "Let me reason") {
+			hasReasoning = true
+		}
+		if strings.Contains(chunk, `"content"`) && strings.Contains(chunk, "The answer is 42.") {
+			hasContent = true
+		}
+	}
+	if !hasReasoning {
+		t.Error("Expected reasoning_content chunk with 'Let me reason'")
+	}
+	if !hasContent {
+		t.Error("Expected content chunk with 'The answer is 42.'")
+	}
+}
+
+func TestStreamConverter_ThoughtTagVariant(t *testing.T) {
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", true)
+
+	event := parser.Event{
+		Type:    "content",
+		Content: "<thought>Deep thought here</thought>Result.",
+	}
+
+	chunks := sc.ProcessEvent(event)
+	if len(chunks) == 0 {
+		t.Fatal("Expected chunks to be generated")
+	}
+
+	hasReasoning := false
+	hasContent := false
+	for _, chunk := range chunks {
+		if strings.Contains(chunk, "reasoning_content") && strings.Contains(chunk, "Deep thought here") {
+			hasReasoning = true
+		}
+		if strings.Contains(chunk, `"content"`) && strings.Contains(chunk, "Result.") {
+			hasContent = true
+		}
+	}
+	if !hasReasoning {
+		t.Error("Expected reasoning_content chunk with 'Deep thought here'")
+	}
+	if !hasContent {
+		t.Error("Expected content chunk with 'Result.'")
+	}
+}
+
+func TestStreamConverter_ReasoningTagVariant(t *testing.T) {
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", true)
+
+	event := parser.Event{
+		Type:    "content",
+		Content: "<reasoning>Step by step</reasoning>Final answer.",
+	}
+
+	chunks := sc.ProcessEvent(event)
+	if len(chunks) == 0 {
+		t.Fatal("Expected chunks to be generated")
+	}
+
+	hasReasoning := false
+	hasContent := false
+	for _, chunk := range chunks {
+		if strings.Contains(chunk, "reasoning_content") && strings.Contains(chunk, "Step by step") {
+			hasReasoning = true
+		}
+		if strings.Contains(chunk, `"content"`) && strings.Contains(chunk, "Final answer.") {
+			hasContent = true
+		}
+	}
+	if !hasReasoning {
+		t.Error("Expected reasoning_content chunk with 'Step by step'")
+	}
+	if !hasContent {
+		t.Error("Expected content chunk with 'Final answer.'")
+	}
+}
+
+func TestExtractThinking_AllVariants(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		wantThinking    string
+		wantRegular     string
+	}{
+		{"thinking tag", "<thinking>thought</thinking>answer", "thought", "answer"},
+		{"think tag", "<think>thought</think>answer", "thought", "answer"},
+		{"reasoning tag", "<reasoning>thought</reasoning>answer", "thought", "answer"},
+		{"thought tag", "<thought>thought</thought>answer", "thought", "answer"},
+		{"no tag", "just content", "", "just content"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			thinking, regular := extractThinking(tt.input)
+			if thinking != tt.wantThinking {
+				t.Errorf("thinking = %q, want %q", thinking, tt.wantThinking)
+			}
+			if regular != tt.wantRegular {
+				t.Errorf("regular = %q, want %q", regular, tt.wantRegular)
+			}
+		})
 	}
 }
