@@ -60,6 +60,9 @@ func main() {
 		case "help", "-h", "--help":
 			printUsage()
 			return
+		case "version", "-v", "--version":
+			fmt.Println(Version)
+			return
 		}
 	}
 
@@ -203,6 +206,7 @@ Commands:
   restart     Restart the daemon
   logs        View daemon logs (tail -f)
   run         Run in foreground (default)
+  version     Show version
   help        Show this help message
 
 Examples:
