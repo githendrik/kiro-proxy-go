@@ -17,7 +17,7 @@ builds:
       - arm64
     binary: kiro-proxy
     ldflags:
-      - -s -w
+      - -s -w -X main.Version={{.Version}}
 
 archives:
   - format: tar.gz

@@ -20,6 +20,11 @@ import (
 	"kiro-proxy/internal/models"
 )
 
+// Version is set at build time via ldflags:
+//
+//	go build -ldflags "-X main.Version=0.1.3"
+var Version = "dev"
+
 func main() {
 	// Handle daemon commands
 	if len(os.Args) > 1 {
@@ -178,7 +183,7 @@ func runForeground() {
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok","version":"0.1.0"}`)
+	fmt.Fprintf(w, `{"status":"ok","version":"%s"}`, Version)
 }
 
 func printUsage() {
