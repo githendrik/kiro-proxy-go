@@ -154,6 +154,15 @@ type KiroToolUse struct {
 	ToolUseID string          `json:"toolUseId"`
 }
 
+// unifiedMessage is an intermediate representation used during conversion.
+// Tool messages are converted into user messages with toolResults attached.
+type unifiedMessage struct {
+	Role        string
+	Content     string
+	ToolCalls   []ToolCall
+	ToolResults []KiroToolResult
+}
+
 // BuildKiroPayload converts an OpenAI ChatCompletionRequest to a Kiro API payload.
 func BuildKiroPayload(req *ChatCompletionRequest, profileARN string, fakeReasoning bool, thinkingBudget int) (*KiroPayload, error) {
 	if len(req.Messages) == 0 {
@@ -195,8 +204,22 @@ func BuildKiroPayload(req *ChatCompletionRequest, profileARN string, fakeReasoni
 		kiroTools = append(kiroTools, spec)
 	}
 
-	// Build history and current message
-	history, currentContent, currentToolResults := buildHistory(messages, systemPrompt, req.Model)
+	// Step 1: Convert OpenAI messages to unified format (tool messages become user messages with toolResults)
+	unified := convertToUnified(messages)
+
+	// Step 2: Merge adjacent same-role messages
+	unified = mergeAdjacentMessages(unified)
+
+	// Step 3: Ensure first message is user
+	if len(unified) > 0 && unified[0].Role != "user" {
+		unified = append([]unifiedMessage{{Role: "user", Content: "(empty)"}}, unified...)
+	}
+
+	// Step 4: Ensure alternating user/assistant roles
+	unified = ensureAlternatingRoles(unified)
+
+	// Step 5: Split into history + currentMessage
+	history, currentContent, currentToolResults := splitHistoryAndCurrent(unified, systemPrompt, req.Model)
 
 	// Build current message
 	currentMsg := KiroUserInputMessage{
@@ -224,6 +247,224 @@ func BuildKiroPayload(req *ChatCompletionRequest, profileARN string, fakeReasoni
 	}
 
 	return payload, nil
+}
+
+// convertToUnified converts OpenAI messages to unified format.
+// Tool messages are accumulated and flushed as user messages with toolResults.
+func convertToUnified(messages []Message) []unifiedMessage {
+	var result []unifiedMessage
+	var pendingToolResults []KiroToolResult
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case "tool":
+			// Accumulate tool results
+			text := extractTextContent(msg.Content)
+			if text == "" {
+				text = "(empty result)"
+			}
+			pendingToolResults = append(pendingToolResults, KiroToolResult{
+				Content:   []KiroToolResultContent{{Text: text}},
+				Status:    "success",
+				ToolUseID: msg.ToolCallID,
+			})
+
+		default:
+			// Flush pending tool results as a user message before this message
+			if len(pendingToolResults) > 0 {
+				result = append(result, unifiedMessage{
+					Role:        "user",
+					Content:     "",
+					ToolResults: pendingToolResults,
+				})
+				pendingToolResults = nil
+			}
+
+			// Convert the current message
+			content := extractTextContent(msg.Content)
+			role := msg.Role
+			// Normalize unknown roles to "user"
+			if role != "user" && role != "assistant" {
+				role = "user"
+			}
+
+			um := unifiedMessage{
+				Role:    role,
+				Content: content,
+			}
+
+			if role == "assistant" && len(msg.ToolCalls) > 0 {
+				um.ToolCalls = msg.ToolCalls
+			}
+
+			result = append(result, um)
+		}
+	}
+
+	// Flush any remaining pending tool results
+	if len(pendingToolResults) > 0 {
+		result = append(result, unifiedMessage{
+			Role:        "user",
+			Content:     "",
+			ToolResults: pendingToolResults,
+		})
+	}
+
+	return result
+}
+
+// mergeAdjacentMessages merges consecutive messages with the same role.
+func mergeAdjacentMessages(messages []unifiedMessage) []unifiedMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	var merged []unifiedMessage
+	merged = append(merged, messages[0])
+
+	for i := 1; i < len(messages); i++ {
+		last := &merged[len(merged)-1]
+		curr := messages[i]
+
+		if last.Role == curr.Role {
+			// Merge content
+			if last.Content != "" && curr.Content != "" {
+				last.Content = last.Content + "\n\n" + curr.Content
+			} else if curr.Content != "" {
+				last.Content = curr.Content
+			}
+			// Merge tool calls
+			last.ToolCalls = append(last.ToolCalls, curr.ToolCalls...)
+			// Merge tool results
+			last.ToolResults = append(last.ToolResults, curr.ToolResults...)
+		} else {
+			merged = append(merged, curr)
+		}
+	}
+
+	return merged
+}
+
+// ensureAlternatingRoles inserts synthetic messages to maintain strict user/assistant alternation.
+func ensureAlternatingRoles(messages []unifiedMessage) []unifiedMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	var result []unifiedMessage
+	result = append(result, messages[0])
+
+	for i := 1; i < len(messages); i++ {
+		prev := result[len(result)-1]
+		curr := messages[i]
+
+		if prev.Role == curr.Role {
+			// Insert a synthetic message of the opposite role
+			if prev.Role == "user" {
+				result = append(result, unifiedMessage{Role: "assistant", Content: "(empty)"})
+			} else {
+				result = append(result, unifiedMessage{Role: "user", Content: "(empty)"})
+			}
+		}
+
+		result = append(result, curr)
+	}
+
+	return result
+}
+
+// splitHistoryAndCurrent splits unified messages into Kiro history entries and current message.
+func splitHistoryAndCurrent(messages []unifiedMessage, systemPrompt, modelID string) ([]KiroHistoryEntry, string, []KiroToolResult) {
+	if len(messages) == 0 {
+		content := "(empty)"
+		if systemPrompt != "" {
+			content = systemPrompt + "\n\n" + content
+		}
+		return nil, content, nil
+	}
+
+	var historyMessages []unifiedMessage
+	var currentContent string
+	var currentToolResults []KiroToolResult
+
+	lastMsg := messages[len(messages)-1]
+
+	if lastMsg.Role == "assistant" {
+		// If last message is assistant, push ALL messages to history, currentMessage = "Continue"
+		historyMessages = messages
+		currentContent = "Continue"
+	} else {
+		// Last message is user: it becomes currentMessage, rest go to history
+		historyMessages = messages[:len(messages)-1]
+		currentContent = lastMsg.Content
+		if currentContent == "" {
+			currentContent = "Continue"
+		}
+		currentToolResults = lastMsg.ToolResults
+	}
+
+	// Prepend system prompt to first user message in history, or to current
+	systemApplied := false
+	if systemPrompt != "" {
+		for i := range historyMessages {
+			if historyMessages[i].Role == "user" {
+				historyMessages[i].Content = systemPrompt + "\n\n" + historyMessages[i].Content
+				systemApplied = true
+				break
+			}
+		}
+		if !systemApplied {
+			currentContent = systemPrompt + "\n\n" + currentContent
+		}
+	}
+
+	// Convert history messages to Kiro format
+	var history []KiroHistoryEntry
+	for _, msg := range historyMessages {
+		switch msg.Role {
+		case "user":
+			content := msg.Content
+			if content == "" {
+				content = "(empty placeholder)"
+			}
+			entry := KiroHistoryEntry{
+				UserInputMessage: &KiroUserInputMessage{
+					Content: content,
+					ModelID: modelID,
+					Origin:  "AI_EDITOR",
+				},
+			}
+			// Attach tool results to user messages in history
+			if len(msg.ToolResults) > 0 {
+				entry.UserInputMessage.UserInputMessageContext = &KiroUserInputMsgContext{
+					ToolResults: msg.ToolResults,
+				}
+			}
+			history = append(history, entry)
+
+		case "assistant":
+			content := msg.Content
+			if content == "" {
+				content = "(empty)"
+			}
+			var toolUses []KiroToolUse
+			for _, tc := range msg.ToolCalls {
+				toolUses = append(toolUses, KiroToolUse{
+					Name:      tc.Function.Name,
+					Input:     json.RawMessage(tc.Function.Arguments),
+					ToolUseID: tc.ID,
+				})
+			}
+			history = append(history, KiroHistoryEntry{
+				AssistantResponseMessage: &KiroAssistantResponseMessage{
+					Content:  content,
+					ToolUses: toolUses,
+				},
+			})
+		}
+	}
+
+	return history, currentContent, currentToolResults
 }
 
 // extractSystemPrompt pulls out system messages from the message list.
@@ -273,131 +514,7 @@ func extractTextContent(content json.RawMessage) string {
 	return string(content)
 }
 
-// buildHistory converts OpenAI messages into Kiro history + current message content.
-// Returns: history entries, current message content, current tool results.
-func buildHistory(messages []Message, systemPrompt, modelID string) ([]KiroHistoryEntry, string, []KiroToolResult) {
-	// Separate trailing tool messages (they become tool results on current message)
-	mainMessages, trailingToolMsgs := splitTrailingToolMessages(messages)
 
-	var history []KiroHistoryEntry
-	var currentContent string
-
-	// If we have trailing tool messages, ALL main messages go into history
-	// and the current message is just "Continue" with tool results
-	if len(trailingToolMsgs) > 0 {
-		for _, msg := range mainMessages {
-			entry := convertToHistoryEntry(msg, modelID)
-			if entry != nil {
-				history = append(history, *entry)
-			}
-		}
-		currentContent = "Continue"
-	} else {
-		// No tool results: last message becomes current, rest go into history
-		if len(mainMessages) == 0 {
-			currentContent = "(empty)"
-		} else {
-			lastIdx := len(mainMessages) - 1
-			for i := 0; i < lastIdx; i++ {
-				msg := mainMessages[i]
-				entry := convertToHistoryEntry(msg, modelID)
-				if entry != nil {
-					history = append(history, *entry)
-				}
-			}
-			lastMsg := mainMessages[lastIdx]
-			currentContent = extractTextContent(lastMsg.Content)
-			if currentContent == "" {
-				currentContent = "(empty placeholder)"
-			}
-		}
-	}
-
-	// Prepend system prompt to first user message in history, or to current
-	if systemPrompt != "" {
-		if len(history) > 0 && history[0].UserInputMessage != nil {
-			history[0].UserInputMessage.Content = systemPrompt + "\n\n" + history[0].UserInputMessage.Content
-		} else {
-			currentContent = systemPrompt + "\n\n" + currentContent
-		}
-	}
-
-	// Convert trailing tool messages to tool results
-	var toolResults []KiroToolResult
-	for _, msg := range trailingToolMsgs {
-		text := extractTextContent(msg.Content)
-		toolResults = append(toolResults, KiroToolResult{
-			Content:   []KiroToolResultContent{{Text: text}},
-			Status:    "success",
-			ToolUseID: msg.ToolCallID,
-		})
-	}
-
-	return history, currentContent, toolResults
-}
-
-// splitTrailingToolMessages separates trailing tool messages from the rest.
-func splitTrailingToolMessages(messages []Message) ([]Message, []Message) {
-	// Find where trailing tool messages start
-	toolStart := len(messages)
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "tool" {
-			toolStart = i
-		} else {
-			break
-		}
-	}
-
-	return messages[:toolStart], messages[toolStart:]
-}
-
-// convertToHistoryEntry converts a single OpenAI message to a Kiro history entry.
-func convertToHistoryEntry(msg Message, modelID string) *KiroHistoryEntry {
-	switch msg.Role {
-	case "user":
-		content := extractTextContent(msg.Content)
-		if content == "" {
-			content = "(empty placeholder)"
-		}
-		return &KiroHistoryEntry{
-			UserInputMessage: &KiroUserInputMessage{
-				Content: content,
-				ModelID: modelID,
-				Origin:  "AI_EDITOR",
-			},
-		}
-
-	case "assistant":
-		content := extractTextContent(msg.Content)
-		// Kiro API requires non-empty content - use "(empty)" placeholder
-		if content == "" {
-			content = "(empty)"
-		}
-		var toolUses []KiroToolUse
-		for _, tc := range msg.ToolCalls {
-			toolUses = append(toolUses, KiroToolUse{
-				Name:      tc.Function.Name,
-				Input:     json.RawMessage(tc.Function.Arguments),
-				ToolUseID: tc.ID,
-			})
-		}
-		return &KiroHistoryEntry{
-			AssistantResponseMessage: &KiroAssistantResponseMessage{
-				Content:  content,
-				ToolUses: toolUses,
-			},
-		}
-
-	case "tool":
-		// Tool messages should not create separate history entries.
-		// They are handled as trailing messages and become toolResults in the current message.
-		// If a tool message appears in the middle of history, skip it.
-		return nil
-
-	default:
-		return nil
-	}
-}
 
 // sanitizeToolName ensures tool names are <= 64 chars and valid.
 func sanitizeToolName(name string) string {

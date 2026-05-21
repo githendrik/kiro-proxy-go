@@ -110,25 +110,29 @@ func TestBuildKiroPayload_ToolCall(t *testing.T) {
 		t.Fatalf("BuildKiroPayload failed: %v", err)
 	}
 
-	if len(payload.ConversationState.History) != 1 {
-		t.Fatalf("Expected 1 history entry, got %d", len(payload.ConversationState.History))
+	// When last message is assistant, all messages go to history and currentMessage = "Continue"
+	if len(payload.ConversationState.History) != 2 {
+		t.Fatalf("Expected 2 history entries, got %d", len(payload.ConversationState.History))
 	}
 
-	historyEntry := payload.ConversationState.History[0]
-	if historyEntry.UserInputMessage == nil {
-		t.Fatal("Expected UserInputMessage in history")
+	// First history entry should be user message
+	if payload.ConversationState.History[0].UserInputMessage == nil {
+		t.Fatal("Expected UserInputMessage in first history entry")
 	}
 
-	if historyEntry.AssistantResponseMessage != nil {
-		t.Fatal("Did not expect AssistantResponseMessage in first history entry")
+	// Second history entry should be assistant with tool calls
+	if payload.ConversationState.History[1].AssistantResponseMessage == nil {
+		t.Fatal("Expected AssistantResponseMessage in second history entry")
 	}
 
-	if len(payload.ConversationState.History) != 1 {
-		t.Fatalf("Expected 1 history entry, got %d", len(payload.ConversationState.History))
+	if len(payload.ConversationState.History[1].AssistantResponseMessage.ToolUses) != 1 {
+		t.Errorf("Expected 1 tool use, got %d", len(payload.ConversationState.History[1].AssistantResponseMessage.ToolUses))
 	}
 
-	// Second message (assistant with tool call) should be in current message or history
-	// Actually with our implementation, last user message is current, assistant goes to history
+	// Current message should be "Continue" since last message was assistant
+	if payload.ConversationState.CurrentMessage.UserInputMessage.Content != "Continue" {
+		t.Errorf("Expected content 'Continue', got '%s'", payload.ConversationState.CurrentMessage.UserInputMessage.Content)
+	}
 }
 
 func TestBuildKiroPayload_ToolResults(t *testing.T) {
@@ -272,6 +276,154 @@ func TestBuildKiroPayload_MultipleMessages(t *testing.T) {
 
 	if payload.ConversationState.CurrentMessage.UserInputMessage.Content != "Second" {
 		t.Errorf("Expected current content 'Second', got '%s'", payload.ConversationState.CurrentMessage.UserInputMessage.Content)
+	}
+}
+
+func TestBuildKiroPayload_MultiTurnToolUse(t *testing.T) {
+	// This simulates a subagent/tool-use conversation with multiple rounds:
+	// user -> assistant(tool_call) -> tool(result) -> assistant(tool_call) -> tool(result) -> assistant(tool_call) -> tool(result)
+	req := &ChatCompletionRequest{
+		Model: "claude-sonnet-4",
+		Messages: []Message{
+			{Role: "user", Content: json.RawMessage(`"Help me plan a feature"`)},
+			{
+				Role:    "assistant",
+				Content: json.RawMessage(`"Let me search the codebase."`),
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "grep", Arguments: `{"pattern": "pipeline"}`}},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"Found 3 matches in src/"`)},
+			{
+				Role:    "assistant",
+				Content: json.RawMessage(`"Let me read the file."`),
+				ToolCalls: []ToolCall{
+					{ID: "call_2", Type: "function", Function: ToolCallFunction{Name: "read", Arguments: `{"path": "src/pipeline.go"}`}},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_2", Content: json.RawMessage(`"package main\nfunc runPipeline() {}"`)},
+			{
+				Role:    "assistant",
+				Content: json.RawMessage(`"Now let me check the config."`),
+				ToolCalls: []ToolCall{
+					{ID: "call_3", Type: "function", Function: ToolCallFunction{Name: "read", Arguments: `{"path": ".gitlab-ci.yml"}`}},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_3", Content: json.RawMessage(`"stages:\n  - build\n  - deploy"`)},
+		},
+		Tools: []Tool{
+			{Type: "function", Function: ToolFunction{Name: "grep", Description: "Search files", Parameters: json.RawMessage(`{"type":"object"}`)}},
+			{Type: "function", Function: ToolFunction{Name: "read", Description: "Read a file", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+	}
+
+	payload, err := BuildKiroPayload(req, "", false, 4000)
+	if err != nil {
+		t.Fatalf("BuildKiroPayload failed: %v", err)
+	}
+
+	// Verify history has strict alternating user/assistant pattern
+	history := payload.ConversationState.History
+	for i, entry := range history {
+		if i%2 == 0 {
+			if entry.UserInputMessage == nil {
+				t.Errorf("History[%d]: expected UserInputMessage, got AssistantResponseMessage", i)
+			}
+		} else {
+			if entry.AssistantResponseMessage == nil {
+				t.Errorf("History[%d]: expected AssistantResponseMessage, got UserInputMessage", i)
+			}
+		}
+	}
+
+	// Verify tool results are attached to user messages (not dropped)
+	// Pattern should be: user, assistant(tool_call), user(tool_result), assistant(tool_call), user(tool_result), assistant(tool_call)
+	// Current message should be user with tool_result for call_3
+	ctx := payload.ConversationState.CurrentMessage.UserInputMessage.UserInputMessageContext
+	if ctx == nil {
+		t.Fatal("Expected UserInputMessageContext on current message")
+	}
+	if len(ctx.ToolResults) != 1 {
+		t.Fatalf("Expected 1 tool result on current message, got %d", len(ctx.ToolResults))
+	}
+	if ctx.ToolResults[0].ToolUseID != "call_3" {
+		t.Errorf("Expected tool result for call_3, got %s", ctx.ToolResults[0].ToolUseID)
+	}
+
+	// Current content should be "Continue"
+	if payload.ConversationState.CurrentMessage.UserInputMessage.Content != "Continue" {
+		t.Errorf("Expected current content 'Continue', got '%s'", payload.ConversationState.CurrentMessage.UserInputMessage.Content)
+	}
+
+	// Verify no nil entries in history
+	for i, entry := range history {
+		if entry.UserInputMessage == nil && entry.AssistantResponseMessage == nil {
+			t.Errorf("History[%d]: both UserInputMessage and AssistantResponseMessage are nil", i)
+		}
+	}
+}
+
+func TestBuildKiroPayload_MidConversationToolResults(t *testing.T) {
+	// Simulates: user -> assistant(tool) -> tool_result -> user (follow-up question)
+	// The tool result should appear in history as a user message with toolResults, not be dropped
+	req := &ChatCompletionRequest{
+		Model: "claude-sonnet-4",
+		Messages: []Message{
+			{Role: "user", Content: json.RawMessage(`"Search for errors"`)},
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "grep", Arguments: `{"pattern": "error"}`}},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_1", Content: json.RawMessage(`"error.go:10: handle error"`)},
+			{Role: "assistant", Content: json.RawMessage(`"I found an error in error.go line 10."`)},
+			{Role: "user", Content: json.RawMessage(`"Fix it please"`)},
+		},
+		Tools: []Tool{
+			{Type: "function", Function: ToolFunction{Name: "grep", Description: "Search", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		},
+	}
+
+	payload, err := BuildKiroPayload(req, "", false, 4000)
+	if err != nil {
+		t.Fatalf("BuildKiroPayload failed: %v", err)
+	}
+
+	// Current message should be the last user message
+	if payload.ConversationState.CurrentMessage.UserInputMessage.Content != "Fix it please" {
+		t.Errorf("Expected current content 'Fix it please', got '%s'", payload.ConversationState.CurrentMessage.UserInputMessage.Content)
+	}
+
+	// History should have: user, assistant(tool_call), user(tool_result), assistant
+	history := payload.ConversationState.History
+	if len(history) != 4 {
+		t.Fatalf("Expected 4 history entries, got %d", len(history))
+	}
+
+	// Verify alternation
+	if history[0].UserInputMessage == nil {
+		t.Error("History[0] should be user")
+	}
+	if history[1].AssistantResponseMessage == nil {
+		t.Error("History[1] should be assistant")
+	}
+	if history[2].UserInputMessage == nil {
+		t.Error("History[2] should be user (tool result)")
+	}
+	if history[3].AssistantResponseMessage == nil {
+		t.Error("History[3] should be assistant")
+	}
+
+	// Verify tool result is attached to the user message in history
+	if history[2].UserInputMessage.UserInputMessageContext == nil {
+		t.Fatal("History[2] should have UserInputMessageContext with tool results")
+	}
+	if len(history[2].UserInputMessage.UserInputMessageContext.ToolResults) != 1 {
+		t.Fatalf("Expected 1 tool result in history[2], got %d", len(history[2].UserInputMessage.UserInputMessageContext.ToolResults))
+	}
+	if history[2].UserInputMessage.UserInputMessageContext.ToolResults[0].ToolUseID != "call_1" {
+		t.Errorf("Expected toolUseId 'call_1', got '%s'", history[2].UserInputMessage.UserInputMessageContext.ToolResults[0].ToolUseID)
 	}
 }
 
