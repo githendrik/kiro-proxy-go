@@ -121,6 +121,12 @@ var supportedThinkingTags = []thinkingTagPair{
 	{"<thought>", "</thought>"},
 }
 
+// initialBufferSize is the max characters to buffer while looking for an
+// opening thinking tag at the start of the response. If no tag is found
+// within this window, the parser gives up and treats everything as content.
+// Matches the Python reference's FAKE_REASONING_INITIAL_BUFFER_SIZE.
+const initialBufferSize = 20
+
 // StreamConverter converts Kiro event stream to OpenAI SSE chunks.
 type StreamConverter struct {
 	model         string
@@ -131,6 +137,7 @@ type StreamConverter struct {
 	thinkingState  ThinkingState
 	matchedTag     *thinkingTagPair // which tag pair was matched for the current thinking block
 	contentBuffer  strings.Builder
+	totalReceived  int  // total content bytes received (for initial buffer limit)
 	toolCalls      map[string]*accumulatedToolCall
 	toolCallOrder  []string
 	sentRole       bool
@@ -221,6 +228,9 @@ func (sc *StreamConverter) processContent(content string) []string {
 func (sc *StreamConverter) processWithThinking(content string) []string {
 	var chunks []string
 
+	// Track total content received for initial buffer limit
+	sc.totalReceived += len(content)
+
 	// Accumulate content and process thinking tags
 	sc.contentBuffer.WriteString(content)
 	buffered := sc.contentBuffer.String()
@@ -228,26 +238,34 @@ func (sc *StreamConverter) processWithThinking(content string) []string {
 	for {
 		switch sc.thinkingState {
 		case ThinkingNone:
+			// Only look for thinking tags at the start of the response.
+			// Once we've received more than initialBufferSize chars without
+			// finding a tag, give up and treat everything as regular content.
+			stripped := strings.TrimLeft(buffered, " \t\n\r")
+
 			// Look for any supported opening tag
 			bestIdx := -1
 			var bestTag *thinkingTagPair
 			for i := range supportedThinkingTags {
-				idx := strings.Index(buffered, supportedThinkingTags[i].Open)
-				if idx != -1 && (bestIdx == -1 || idx < bestIdx) {
-					bestIdx = idx
+				idx := strings.Index(stripped, supportedThinkingTags[i].Open)
+				if idx == 0 { // Tag must be at the start (after whitespace)
+					bestIdx = strings.Index(buffered, supportedThinkingTags[i].Open)
 					bestTag = &supportedThinkingTags[i]
+					break
 				}
 			}
 
 			if bestIdx == -1 {
-				// Check if we might be in the middle of a tag
-				if hasPartialThinkingTag(buffered) {
-					// Hold buffer, wait for more data
+				// No tag found at start. Check if we should keep buffering.
+				if sc.totalReceived <= initialBufferSize && couldBeTagPrefix(stripped) {
+					// Still within initial buffer window and could be a partial tag
 					sc.contentBuffer.Reset()
 					sc.contentBuffer.WriteString(buffered)
 					return chunks
 				}
-				// No thinking tag, emit as regular content
+				// Exceeded buffer limit or content doesn't match any tag prefix.
+				// Give up on tag detection, emit everything as regular content.
+				sc.thinkingState = ThinkingDone
 				if buffered != "" {
 					chunks = append(chunks, sc.emitContent(buffered)...)
 					buffered = ""
@@ -256,7 +274,7 @@ func (sc *StreamConverter) processWithThinking(content string) []string {
 				return chunks
 			}
 
-			// Emit any content before the tag
+			// Found a tag at the start - emit any whitespace before it as content
 			if bestIdx > 0 {
 				chunks = append(chunks, sc.emitContent(buffered[:bestIdx])...)
 			}
@@ -307,15 +325,17 @@ func (sc *StreamConverter) processWithThinking(content string) []string {
 	}
 }
 
-// hasPartialThinkingTag checks if the buffer ends with a partial match
-// of any supported thinking opening tag.
-func hasPartialThinkingTag(s string) bool {
+// couldBeTagPrefix checks if text could be the start of any supported opening tag.
+func couldBeTagPrefix(text string) bool {
+	if text == "" {
+		return true
+	}
 	for _, tag := range supportedThinkingTags {
-		if containsPartialTag(s, tag.Open) {
+		if strings.HasPrefix(tag.Open, text) {
 			return true
 		}
 	}
-	return strings.HasSuffix(s, "<")
+	return false
 }
 
 // containsPartialTag checks if the end of s could be the start of tag.

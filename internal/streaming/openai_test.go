@@ -315,3 +315,81 @@ func TestExtractThinking_AllVariants(t *testing.T) {
 		})
 	}
 }
+
+func TestStreamConverter_ThinkingTagInMiddleOfContent(t *testing.T) {
+	// If a thinking tag appears AFTER the initial buffer window,
+	// it should NOT be parsed as a thinking block - it should pass through
+	// as regular content. This prevents false positives when the model
+	// mentions <thinking> in its output.
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", true)
+
+	// Send enough content to exceed the initial buffer window
+	event1 := parser.Event{
+		Type:    "content",
+		Content: "Here is some regular content that exceeds the buffer. ",
+	}
+	chunks1 := sc.ProcessEvent(event1)
+	if len(chunks1) == 0 {
+		t.Fatal("Expected content chunks to be emitted")
+	}
+
+	// Now send content with a thinking tag - should be treated as regular content
+	event2 := parser.Event{
+		Type:    "content",
+		Content: "The model uses <thinking> tags for reasoning.",
+	}
+	chunks2 := sc.ProcessEvent(event2)
+	if len(chunks2) == 0 {
+		t.Fatal("Expected content chunks to be emitted")
+	}
+
+	// Verify it was emitted as regular content, not reasoning
+	for _, chunk := range chunks2 {
+		if strings.Contains(chunk, "reasoning_content") {
+			t.Error("Expected <thinking> in middle of content to NOT be parsed as reasoning")
+		}
+	}
+}
+
+func TestStreamConverter_PartialTagBuffering(t *testing.T) {
+	// Simulate a thinking tag split across multiple chunks
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", true)
+
+	// First chunk: partial tag
+	event1 := parser.Event{
+		Type:    "content",
+		Content: "<thin",
+	}
+	chunks1 := sc.ProcessEvent(event1)
+	// Should buffer, not emit yet
+	if len(chunks1) != 0 {
+		t.Errorf("Expected no chunks while buffering partial tag, got %d", len(chunks1))
+	}
+
+	// Second chunk: completes the tag and has thinking content
+	event2 := parser.Event{
+		Type:    "content",
+		Content: "king>My reasoning</thinking>The answer.",
+	}
+	chunks2 := sc.ProcessEvent(event2)
+	if len(chunks2) == 0 {
+		t.Fatal("Expected chunks after completing tag")
+	}
+
+	hasReasoning := false
+	hasContent := false
+	for _, chunk := range chunks2 {
+		if strings.Contains(chunk, "reasoning_content") && strings.Contains(chunk, "My reasoning") {
+			hasReasoning = true
+		}
+		if strings.Contains(chunk, `"content"`) && strings.Contains(chunk, "The answer.") {
+			hasContent = true
+		}
+	}
+	if !hasReasoning {
+		t.Error("Expected reasoning_content with 'My reasoning'")
+	}
+	if !hasContent {
+		t.Error("Expected content with 'The answer.'")
+	}
+}
