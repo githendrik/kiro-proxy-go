@@ -113,11 +113,12 @@ type StreamConverter struct {
 	created       int64
 	fakeReasoning bool
 
-	thinkingState ThinkingState
-	contentBuffer strings.Builder
-	toolCalls     map[string]*accumulatedToolCall
-	toolCallOrder []string
-	sentRole      bool
+	thinkingState  ThinkingState
+	contentBuffer  strings.Builder
+	toolCalls      map[string]*accumulatedToolCall
+	toolCallOrder  []string
+	sentRole       bool
+	sentContent    bool // tracks whether regular content has been emitted
 }
 
 type accumulatedToolCall struct {
@@ -144,7 +145,13 @@ func (sc *StreamConverter) ProcessEvent(event parser.Event) []string {
 	case "content":
 		// Native thinking events from Kiro API (thinkingContent field)
 		// should be emitted directly as reasoning_content, bypassing the tag parser.
+		// However, if regular content has already been emitted, suppress late-arriving
+		// thinking events to prevent them from appearing after the answer.
 		if event.IsThinking {
+			if sc.sentContent {
+				// Late thinking event after content - discard to prevent misordering
+				return nil
+			}
 			return sc.emitReasoning(event.Content)
 		}
 		return sc.processContent(event.Content)
@@ -285,6 +292,8 @@ func containsPartialTag(s, tag string) bool {
 
 // emitContent creates an SSE chunk with regular content.
 func (sc *StreamConverter) emitContent(content string) []string {
+	sc.sentContent = true
+
 	chunk := ChatCompletionChunk{
 		ID:      sc.requestID,
 		Object:  "chat.completion.chunk",
@@ -420,7 +429,11 @@ func (sc *StreamConverter) FlushBuffer() []string {
 	sc.contentBuffer.Reset()
 
 	if sc.thinkingState == ThinkingActive {
-		// Unclosed thinking block - emit as reasoning
+		// Unclosed thinking block - if regular content was already sent,
+		// suppress to prevent misordered thinking at end of stream.
+		if sc.sentContent {
+			return nil
+		}
 		return sc.emitReasoning(buffered)
 	}
 	// Regular content

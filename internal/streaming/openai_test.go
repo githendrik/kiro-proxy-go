@@ -114,3 +114,82 @@ func TestStreamConverter_MultipleContentChunks(t *testing.T) {
 		t.Fatal("Expected chunks to be generated")
 	}
 }
+
+func TestStreamConverter_LateThinkingEventSuppressed(t *testing.T) {
+	// Simulate the scenario where native thinking events arrive AFTER
+	// regular content has already been emitted. These should be suppressed
+	// to prevent misordered thinking appearing after the answer.
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", false)
+
+	// First, emit some regular content
+	contentEvent := parser.Event{
+		Type:    "content",
+		Content: "Here is the answer.",
+	}
+	chunks := sc.ProcessEvent(contentEvent)
+	if len(chunks) == 0 {
+		t.Fatal("Expected content chunk to be emitted")
+	}
+	if !strings.Contains(chunks[0], "Here is the answer.") {
+		t.Errorf("Expected content in chunk, got '%s'", chunks[0])
+	}
+
+	// Now a late-arriving thinking event should be suppressed
+	thinkingEvent := parser.Event{
+		Type:       "content",
+		Content:    "Let me reconsider...",
+		IsThinking: true,
+	}
+	lateChunks := sc.ProcessEvent(thinkingEvent)
+	if len(lateChunks) != 0 {
+		t.Errorf("Expected late thinking event to be suppressed, got %d chunks", len(lateChunks))
+	}
+}
+
+func TestStreamConverter_ThinkingBeforeContentAllowed(t *testing.T) {
+	// Native thinking events that arrive BEFORE any content should be emitted normally.
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", false)
+
+	// Thinking event arrives first
+	thinkingEvent := parser.Event{
+		Type:       "content",
+		Content:    "Let me think about this...",
+		IsThinking: true,
+	}
+	chunks := sc.ProcessEvent(thinkingEvent)
+	if len(chunks) == 0 {
+		t.Fatal("Expected thinking chunk to be emitted")
+	}
+	if !strings.Contains(chunks[0], "reasoning_content") {
+		t.Errorf("Expected reasoning_content in chunk, got '%s'", chunks[0])
+	}
+
+	// Then regular content arrives
+	contentEvent := parser.Event{
+		Type:    "content",
+		Content: "The answer is 42.",
+	}
+	contentChunks := sc.ProcessEvent(contentEvent)
+	if len(contentChunks) == 0 {
+		t.Fatal("Expected content chunk to be emitted")
+	}
+	if !strings.Contains(contentChunks[0], "The answer is 42.") {
+		t.Errorf("Expected content in chunk, got '%s'", contentChunks[0])
+	}
+}
+
+func TestStreamConverter_FlushBufferSuppressedAfterContent(t *testing.T) {
+	// If the stream ends with an unclosed thinking block but content was
+	// already sent, FlushBuffer should suppress the buffered thinking.
+	sc := NewStreamConverter("claude-sonnet-4", "test-id", true)
+
+	// Emit regular content first (bypassing fake reasoning)
+	sc.sentContent = true
+	sc.thinkingState = ThinkingActive
+	sc.contentBuffer.WriteString("some leftover thinking")
+
+	chunks := sc.FlushBuffer()
+	if len(chunks) != 0 {
+		t.Errorf("Expected FlushBuffer to suppress thinking after content, got %d chunks", len(chunks))
+	}
+}
