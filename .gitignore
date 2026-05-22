@@ -34,3 +34,6 @@ go.work.sum
 # Build output
 kiro-proxy-go
 kiro-proxy
+
+# Documentation
+TOKEN_REFRESH_NOTES.md
