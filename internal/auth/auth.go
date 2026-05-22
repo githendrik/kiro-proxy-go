@@ -213,6 +213,13 @@ func (m *Manager) GetAccessToken() (string, error) {
 		slog.Warn("token refresh failed, reloading credentials file and retrying", "error", err)
 		m.mu.Lock()
 		creds, readErr := m.loadCredsFile()
+		if readErr == nil {
+			slog.Debug("reloaded credentials file", 
+				"file", m.credsFilePath,
+				"has_refresh_token", creds.RefreshToken != "",
+				"refresh_token_changed", creds.RefreshToken != m.refreshToken,
+				"expires_at", creds.ExpiresAt)
+		}
 		if readErr == nil && creds.RefreshToken != "" && creds.RefreshToken != m.refreshToken {
 			slog.Info("credentials file has a different refresh token, retrying refresh")
 			m.refreshToken = creds.RefreshToken
@@ -226,17 +233,27 @@ func (m *Manager) GetAccessToken() (string, error) {
 			token, expiresAt, newRefreshToken, profileARN, err = m.doRefresh()
 		} else {
 			m.mu.Unlock()
+			if readErr == nil && creds.RefreshToken == m.refreshToken {
+				slog.Warn("credentials file has the same (stale) refresh token, cannot retry",
+					"file", m.credsFilePath)
+			}
 		}
 	}
 
 	// Graceful degradation: if refresh fails but we have a non-expired access token, use it
 	if err != nil {
 		m.mu.Lock()
+		// Only use expired token as last resort if it's VERY recently expired (< 1 min)
 		if m.accessToken != "" && !m.isTokenExpired() {
 			slog.Warn("token refresh failed but current access token is still valid, using it temporarily",
 				"error", err, "expires_at", m.expiresAt.Format(time.RFC3339))
 			m.mu.Unlock()
 			return m.accessToken, nil
+		}
+		// Token is actually expired - don't use it, return the refresh error
+		if m.accessToken != "" && m.isTokenExpired() {
+			slog.Warn("access token has expired and refresh failed, re-authentication required",
+				"error", err, "expired_at", m.expiresAt.Format(time.RFC3339))
 		}
 		m.mu.Unlock()
 		
@@ -332,7 +349,13 @@ func (m *Manager) doDesktopRefresh() (accessToken string, expiresAt time.Time, n
 }
 
 // doOIDCRefresh calls the AWS SSO OIDC refresh endpoint.
+// On 400 error with file mode, reloads credentials and retries once (matches Python kiro-gateway).
 func (m *Manager) doOIDCRefresh() (accessToken string, expiresAt time.Time, newRefreshToken string, profileARN string, err error) {
+	return m.doOIDCRefreshInternal(false)
+}
+
+// doOIDCRefreshInternal performs the actual OIDC refresh with retry logic.
+func (m *Manager) doOIDCRefreshInternal(retry bool) (accessToken string, expiresAt time.Time, newRefreshToken string, profileARN string, err error) {
 	refreshURL := fmt.Sprintf("https://oidc.%s.amazonaws.com/token", m.region)
 
 	// Build JSON payload (NOT form-urlencoded - AWS SSO OIDC requires JSON)
@@ -363,6 +386,29 @@ func (m *Manager) doOIDCRefresh() (accessToken string, expiresAt time.Time, newR
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		
+		// Handle 400 error (invalid_grant) - reload credentials and retry once
+		// This matches the Python kiro-gateway behavior
+		if resp.StatusCode == 400 && !retry && m.credsFilePath != "" {
+			slog.Warn("OIDC refresh failed with 400, reloading credentials and retrying", 
+				"error", string(respBody))
+			
+			creds, readErr := m.loadCredsFile()
+			if readErr == nil && creds.RefreshToken != "" && creds.RefreshToken != m.refreshToken {
+				slog.Info("credentials file has a different refresh token, retrying OIDC refresh")
+				m.refreshToken = creds.RefreshToken
+				if creds.Region != "" {
+					m.fileRegion = creds.Region
+				}
+				if creds.ProfileARN != "" {
+					m.profileARN = creds.ProfileARN
+				}
+				// Retry with new token
+				return m.doOIDCRefreshInternal(true)
+			}
+			slog.Warn("credentials file has the same refresh token, cannot retry")
+		}
+		
 		return "", time.Time{}, "", "", fmt.Errorf("OIDC refresh returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
