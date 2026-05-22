@@ -15,7 +15,8 @@ import (
 )
 
 // Token refresh threshold - refresh when token has less than this time remaining
-const TokenRefreshThreshold = 10 * time.Minute
+// Since access tokens expire after 1 hour, we refresh when 15 minutes remain
+const TokenRefreshThreshold = 15 * time.Minute
 
 // CredsFile represents the JSON credentials file written by kiro-cli.
 type CredsFile struct {
@@ -596,6 +597,9 @@ func (m *Manager) ForceRefresh() error {
 	m.accessToken = token
 	m.expiresAt = expiresAt
 	m.lastRefreshTime = time.Now()
+	if newRefreshToken != "" {
+		m.refreshToken = newRefreshToken
+	}
 	if profileARN != "" {
 		m.profileARN = profileARN
 	}
@@ -612,8 +616,8 @@ func (m *Manager) ForceRefresh() error {
 }
 
 // BackgroundRefreshInterval is how often to refresh tokens in the background.
-// Set to 30 minutes to refresh well before the 1-hour expiration.
-const BackgroundRefreshInterval = 30 * time.Minute
+// Access tokens expire after 1 hour, so we refresh every 20 minutes to stay well ahead.
+const BackgroundRefreshInterval = 20 * time.Minute
 
 // StartBackgroundRefresh launches a goroutine that periodically refreshes tokens.
 // This prevents token expiration during idle periods.
@@ -639,9 +643,9 @@ func (m *Manager) StartBackgroundRefresh() {
 		for {
 			select {
 			case <-ticker.C:
-				// Try to refresh the token
-				// We call GetAccessToken() which will only refresh if expiring soon
-				_, err := m.GetAccessToken()
+				// Force a refresh attempt every interval to keep refresh token valid
+				// This is important because kiro-cli refresh tokens can expire after periods of inactivity
+				err := m.ForceRefresh()
 				if err != nil {
 					slog.Warn("background token refresh failed", "error", err)
 				} else {
