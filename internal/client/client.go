@@ -48,9 +48,15 @@ var retryableStatuses = map[int]bool{
 	504: true,
 }
 
+// authErrorStatuses indicate authentication failures that require token refresh
+var authErrorStatuses = map[int]bool{
+	401: true,
+}
+
 // DoStream sends a request to the Kiro API and returns the raw response body
 // for streaming. The caller is responsible for closing the body.
 // Retries on transient errors with exponential backoff.
+// Automatically refreshes tokens on authentication errors (401, 403).
 func (c *Client) DoStream(method, path string, body io.Reader, getBody func() io.Reader) (*http.Response, error) {
 	url := c.apiHost + path
 
@@ -84,6 +90,25 @@ func (c *Client) DoStream(method, path string, body io.Reader, getBody func() io
 		if err != nil {
 			lastErr = fmt.Errorf("request failed: %w", err)
 			slog.Warn("request error, will retry", "attempt", attempt, "error", err)
+			continue
+		}
+
+		// Handle authentication errors - force token refresh and retry
+		if authErrorStatuses[resp.StatusCode] || resp.StatusCode == 403 {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			slog.Warn("authentication/authorization error detected, forcing token refresh", "status", resp.StatusCode, "body", string(respBody))
+			
+			// Force a fresh token
+			refreshErr := c.authManager.ForceRefresh()
+			if refreshErr != nil {
+				lastErr = fmt.Errorf("authentication failed and token refresh unsuccessful: %w", refreshErr)
+				slog.Error("token refresh failed after auth error", "error", refreshErr)
+				continue
+			}
+			
+			// Retry with new token
+			slog.Info("token refreshed successfully, retrying request")
 			continue
 		}
 

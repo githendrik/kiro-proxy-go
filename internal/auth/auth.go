@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// Token refresh threshold - refresh when token has less than this time remaining
+const TokenRefreshThreshold = 10 * time.Minute
+
 // CredsFile represents the JSON credentials file written by kiro-cli.
 type CredsFile struct {
 	AccessToken  string `json:"accessToken"`
@@ -40,10 +43,11 @@ type Manager struct {
 	fileRegion    string // region from creds file (for API host)
 	authType      AuthType
 
-	mu          sync.Mutex
-	accessToken string
-	expiresAt   time.Time
-	profileARN  string
+	mu              sync.Mutex
+	accessToken     string
+	expiresAt       time.Time
+	profileARN      string
+	lastRefreshTime time.Time
 }
 
 // AuthType represents the authentication mechanism.
@@ -126,61 +130,91 @@ type refreshResponse struct {
 	ProfileARN   string `json:"profileArn,omitempty"`
 }
 
+// isTokenExpiringSoon checks if the token needs refresh.
+// Returns true if token expires within the threshold or if we have no expiration info.
+func (m *Manager) isTokenExpiringSoon() bool {
+	if m.expiresAt.IsZero() {
+		return true
+	}
+	return time.Until(m.expiresAt) <= TokenRefreshThreshold
+}
+
+// isTokenExpired checks if the token is actually expired.
+func (m *Manager) isTokenExpired() bool {
+	if m.expiresAt.IsZero() {
+		return true
+	}
+	return time.Now().After(m.expiresAt)
+}
+
 // GetAccessToken returns a valid access token, refreshing if needed.
 // Thread-safe via mutex.
+// Implements silent token refresh - automatically refreshes before expiration.
 func (m *Manager) GetAccessToken() (string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
-	// In file mode, first try to read a fresh token from the file
-	// (kiro-cli may have refreshed it)
+	// Check if we have a valid token that's not expiring soon
+	if m.accessToken != "" && !m.isTokenExpiringSoon() {
+		slog.Debug("using cached access token", "expires_at", m.expiresAt.Format(time.RFC3339))
+		m.mu.Unlock()
+		return m.accessToken, nil
+	}
+
+	// In file mode, try to read fresh credentials from file first
+	// This handles the case where kiro-cli or another process refreshed the token
 	if m.credsFilePath != "" {
 		creds, err := m.loadCredsFile()
-		if err != nil {
-			return "", fmt.Errorf("failed to read credentials file: %w", err)
-		}
+		if err == nil {
+			// Update API region from file
+			if creds.Region != "" {
+				m.fileRegion = creds.Region
+			}
 
-		// Update API region from file (but NOT auth region — that stays as configured)
-		if creds.Region != "" {
-			m.fileRegion = creds.Region
-		}
+			// If file has a valid access token that's not expiring soon, use it
+			if creds.AccessToken != "" {
+				expiresAt, err := parseExpiresAt(creds.ExpiresAt)
+				if err == nil && time.Until(expiresAt) > TokenRefreshThreshold {
+					m.accessToken = creds.AccessToken
+					m.expiresAt = expiresAt
+					m.refreshToken = creds.RefreshToken
+					if creds.ProfileARN != "" {
+						m.profileARN = creds.ProfileARN
+					}
+					slog.Info("using fresh access token from credentials file", "expires_at", expiresAt.Format(time.RFC3339))
+					m.mu.Unlock()
+					return m.accessToken, nil
+				}
+			}
 
-		// Use refresh token from file
-		m.refreshToken = creds.RefreshToken
-
-		// Pick up profileArn from file if present
-		if creds.ProfileARN != "" {
-			m.profileARN = creds.ProfileARN
-		}
-
-		// If the file has a valid access token, use it directly
-		if creds.AccessToken != "" {
-			expiresAt, err := parseExpiresAt(creds.ExpiresAt)
-			if err == nil && time.Until(expiresAt) > 10*time.Minute {
-				m.accessToken = creds.AccessToken
-				m.expiresAt = expiresAt
-				slog.Info("using access token from credentials file", "expires_at", expiresAt.Format(time.RFC3339))
-				return m.accessToken, nil
+			// Update refresh token from file for the refresh attempt
+			if creds.RefreshToken != "" {
+				m.refreshToken = creds.RefreshToken
+			}
+			if creds.ProfileARN != "" {
+				m.profileARN = creds.ProfileARN
 			}
 		}
 	}
 
+	m.mu.Unlock()
+
+	// Check if we have a refresh token
 	if m.refreshToken == "" {
-		return "", fmt.Errorf("no refresh token available (check credentials file or REFRESH_TOKEN env var)")
+		return "", fmt.Errorf("no refresh token available (run 'kiro-cli login' or check REFRESH_TOKEN env var)")
 	}
 
-	slog.Info("refreshing access token")
+	slog.Info("refreshing access token (silent refresh)")
 
 	token, expiresAt, newRefreshToken, profileARN, err := m.doRefresh()
 
-	// If refresh failed and we're in file mode, re-read the creds file and retry once.
-	// This handles the case where another process (e.g. kiro-cli or another proxy)
-	// rotated the refresh token, making our in-memory copy stale.
+	// If refresh failed, try to reload credentials and retry once
+	// This handles the case where the refresh token was invalidated (e.g., kiro-cli re-login)
 	if err != nil && m.credsFilePath != "" {
-		slog.Warn("token refresh failed, re-reading credentials file and retrying once", "error", err)
+		slog.Warn("token refresh failed, reloading credentials file and retrying", "error", err)
+		m.mu.Lock()
 		creds, readErr := m.loadCredsFile()
 		if readErr == nil && creds.RefreshToken != "" && creds.RefreshToken != m.refreshToken {
-			slog.Info("credentials file has a newer refresh token, retrying refresh")
+			slog.Info("credentials file has a different refresh token, retrying refresh")
 			m.refreshToken = creds.RefreshToken
 			if creds.Region != "" {
 				m.fileRegion = creds.Region
@@ -188,35 +222,47 @@ func (m *Manager) GetAccessToken() (string, error) {
 			if creds.ProfileARN != "" {
 				m.profileARN = creds.ProfileARN
 			}
+			m.mu.Unlock()
 			token, expiresAt, newRefreshToken, profileARN, err = m.doRefresh()
+		} else {
+			m.mu.Unlock()
 		}
 	}
 
-	// Graceful degradation: if refresh still fails but we have an access token
-	// that hasn't actually expired yet, use it as a fallback.
+	// Graceful degradation: if refresh fails but we have a non-expired access token, use it
 	if err != nil {
-		if m.accessToken != "" && time.Until(m.expiresAt) > 0 {
-			slog.Warn("token refresh failed but current access token is still valid, using it as fallback",
+		m.mu.Lock()
+		if m.accessToken != "" && !m.isTokenExpired() {
+			slog.Warn("token refresh failed but current access token is still valid, using it temporarily",
 				"error", err, "expires_at", m.expiresAt.Format(time.RFC3339))
+			m.mu.Unlock()
 			return m.accessToken, nil
 		}
-		return "", fmt.Errorf("token refresh failed: %w", err)
+		m.mu.Unlock()
+		
+		return "", fmt.Errorf("token refresh failed (you may need to re-authenticate with 'kiro-cli login'): %w", err)
 	}
 
+	// Update cached token
+	m.mu.Lock()
 	m.accessToken = token
 	m.expiresAt = expiresAt
+	m.lastRefreshTime = time.Now()
 	if profileARN != "" {
 		m.profileARN = profileARN
 	}
 
 	// Write back to file if in file mode
 	if m.credsFilePath != "" {
+		m.mu.Unlock()
 		if err := m.saveCredsFile(token, newRefreshToken, expiresAt, profileARN); err != nil {
 			slog.Warn("failed to write back credentials file", "error", err)
 		}
+		m.mu.Lock()
 	}
 
 	slog.Info("token refreshed", "expires_at", expiresAt.Format(time.RFC3339))
+	m.mu.Unlock()
 	return m.accessToken, nil
 }
 
@@ -459,6 +505,57 @@ func parseExpiresAt(s string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("cannot parse time: %s", s)
+}
+
+// ForceRefresh forces a token refresh regardless of expiration status.
+// This is useful when receiving 403 errors from the API.
+func (m *Manager) ForceRefresh() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	slog.Info("forcing token refresh")
+
+	// In file mode, reload credentials first
+	if m.credsFilePath != "" {
+		creds, err := m.loadCredsFile()
+		if err == nil {
+			if creds.Region != "" {
+				m.fileRegion = creds.Region
+			}
+			if creds.RefreshToken != "" {
+				m.refreshToken = creds.RefreshToken
+			}
+			if creds.ProfileARN != "" {
+				m.profileARN = creds.ProfileARN
+			}
+		}
+	}
+
+	if m.refreshToken == "" {
+		return fmt.Errorf("no refresh token available")
+	}
+
+	token, expiresAt, newRefreshToken, profileARN, err := m.doRefresh()
+	if err != nil {
+		return fmt.Errorf("forced refresh failed: %w", err)
+	}
+
+	m.accessToken = token
+	m.expiresAt = expiresAt
+	m.lastRefreshTime = time.Now()
+	if profileARN != "" {
+		m.profileARN = profileARN
+	}
+
+	// Write back to file if in file mode
+	if m.credsFilePath != "" {
+		if saveErr := m.saveCredsFile(token, newRefreshToken, expiresAt, profileARN); saveErr != nil {
+			slog.Warn("failed to write back credentials file", "error", saveErr)
+		}
+	}
+
+	slog.Info("token forcibly refreshed", "expires_at", expiresAt.Format(time.RFC3339))
+	return nil
 }
 
 // expandPath expands ~ to home directory.
