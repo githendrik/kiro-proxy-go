@@ -48,6 +48,10 @@ type Manager struct {
 	expiresAt       time.Time
 	profileARN      string
 	lastRefreshTime time.Time
+	
+	// Background refresh
+	stopRefresh chan struct{}
+	wg          sync.WaitGroup
 }
 
 // AuthType represents the authentication mechanism.
@@ -605,6 +609,65 @@ func (m *Manager) ForceRefresh() error {
 
 	slog.Info("token forcibly refreshed", "expires_at", expiresAt.Format(time.RFC3339))
 	return nil
+}
+
+// BackgroundRefreshInterval is how often to refresh tokens in the background.
+// Set to 30 minutes to refresh well before the 1-hour expiration.
+const BackgroundRefreshInterval = 30 * time.Minute
+
+// StartBackgroundRefresh launches a goroutine that periodically refreshes tokens.
+// This prevents token expiration during idle periods.
+// Call StopBackgroundRefresh() to stop the goroutine.
+func (m *Manager) StartBackgroundRefresh() {
+	m.mu.Lock()
+	if m.stopRefresh != nil {
+		// Already running
+		m.mu.Unlock()
+		return
+	}
+	m.stopRefresh = make(chan struct{})
+	m.mu.Unlock()
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		ticker := time.NewTicker(BackgroundRefreshInterval)
+		defer ticker.Stop()
+
+		slog.Info("background token refresh started", "interval", BackgroundRefreshInterval)
+
+		for {
+			select {
+			case <-ticker.C:
+				// Try to refresh the token
+				// We call GetAccessToken() which will only refresh if expiring soon
+				_, err := m.GetAccessToken()
+				if err != nil {
+					slog.Warn("background token refresh failed", "error", err)
+				} else {
+					slog.Debug("background token refresh completed")
+				}
+			case <-m.stopRefresh:
+				slog.Info("background token refresh stopped")
+				return
+			}
+		}
+	}()
+}
+
+// StopBackgroundRefresh stops the background refresh goroutine.
+// Call this during shutdown to ensure clean termination.
+func (m *Manager) StopBackgroundRefresh() {
+	m.mu.Lock()
+	if m.stopRefresh == nil {
+		m.mu.Unlock()
+		return
+	}
+	close(m.stopRefresh)
+	m.stopRefresh = nil
+	m.mu.Unlock()
+
+	m.wg.Wait()
 }
 
 // expandPath expands ~ to home directory.

@@ -120,6 +120,9 @@ func runForeground() {
 	}
 	slog.Info("authentication successful")
 
+	// Start background token refresh to prevent expiration during idle periods
+	authManager.StartBackgroundRefresh()
+
 	// Update API host from creds file region if no explicit API region override
 	if cfg.CredsFile != "" && !cfg.APIRegionSet {
 		if fileRegion := authManager.FileRegion(); fileRegion != "" && fileRegion != cfg.APIRegion {
@@ -185,6 +188,9 @@ func runForeground() {
 
 	<-done
 	slog.Info("shutting down...")
+
+	// Stop background refresh
+	authManager.StopBackgroundRefresh()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
