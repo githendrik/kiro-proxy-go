@@ -81,6 +81,16 @@ func (r *Resolver) ListModels() []Model {
 	return r.buildModelList(FallbackModels)
 }
 
+// LogAvailableModels prints the list of available models to the log.
+func (r *Resolver) LogAvailableModels() {
+	models := r.ListModels()
+	modelIDs := make([]string, 0, len(models))
+	for _, m := range models {
+		modelIDs = append(modelIDs, m.ID)
+	}
+	slog.Info("available models", "models", modelIDs)
+}
+
 // buildModelList adds aliases and filters hidden models.
 func (r *Resolver) buildModelList(models []Model) []Model {
 	var result []Model

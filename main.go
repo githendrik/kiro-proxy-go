@@ -136,8 +136,12 @@ func runForeground() {
 	// Initialize model resolver
 	resolver := models.NewResolver(kiroClient)
 
+	// Log available models on startup
+	resolver.LogAvailableModels()
+
 	// Initialize handlers
 	openaiHandler := handler.NewOpenAIHandler(kiroClient, authManager, resolver, cfg)
+	debugHandler := handler.NewDebugHandler(resolver)
 
 	// Setup routes
 	mux := http.NewServeMux()
@@ -149,6 +153,9 @@ func runForeground() {
 	// OpenAI-compatible endpoints
 	mux.HandleFunc("GET /v1/models", openaiHandler.ListModels)
 	mux.HandleFunc("POST /v1/chat/completions", openaiHandler.ChatCompletions)
+
+	// Debug endpoints
+	mux.HandleFunc("GET /debug/models", debugHandler.Models)
 
 	// Apply middleware
 	var h http.Handler = mux
