@@ -15,8 +15,8 @@ import (
 )
 
 // Token refresh threshold - refresh when token has less than this time remaining
-// Since access tokens expire after 1 hour, we refresh when 15 minutes remain
-const TokenRefreshThreshold = 15 * time.Minute
+// Since access tokens expire after 1 hour, we refresh when 10 minutes remain
+const TokenRefreshThreshold = 10 * time.Minute
 
 // CredsFile represents the JSON credentials file written by kiro-cli.
 type CredsFile struct {
@@ -616,11 +616,16 @@ func (m *Manager) ForceRefresh() error {
 }
 
 // BackgroundRefreshInterval is how often to refresh tokens in the background.
-// Access tokens expire after 1 hour, so we refresh every 20 minutes to stay well ahead.
-const BackgroundRefreshInterval = 20 * time.Minute
+// Set to 45 minutes to refresh before the 1-hour access token expires.
+// NOTE: Python kiro-gateway uses ON-DEMAND refresh only (no background task).
+// We use a conservative background refresh as a safety net for idle periods.
+const BackgroundRefreshInterval = 45 * time.Minute
 
 // StartBackgroundRefresh launches a goroutine that periodically refreshes tokens.
-// This prevents token expiration during idle periods.
+// This prevents token expiration during extended idle periods.
+// NOTE: Python kiro-gateway uses ON-DEMAND refresh only (no background task).
+// We use background refresh as a safety net, but less frequently (45 min) to avoid
+// overusing refresh tokens.
 // Call StopBackgroundRefresh() to stop the goroutine.
 func (m *Manager) StartBackgroundRefresh() {
 	m.mu.Lock()
@@ -643,9 +648,9 @@ func (m *Manager) StartBackgroundRefresh() {
 		for {
 			select {
 			case <-ticker.C:
-				// Force a refresh attempt every interval to keep refresh token valid
-				// This is important because kiro-cli refresh tokens can expire after periods of inactivity
-				err := m.ForceRefresh()
+				// Try to refresh the token
+				// Use GetAccessToken() which only refreshes if expiring soon
+				_, err := m.GetAccessToken()
 				if err != nil {
 					slog.Warn("background token refresh failed", "error", err)
 				} else {
