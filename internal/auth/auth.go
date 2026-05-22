@@ -40,8 +40,8 @@ type Manager struct {
 	refreshToken  string // direct refresh token (direct mode)
 	clientID      string // OAuth client ID (for OIDC auth)
 	clientSecret  string // OAuth client secret (for OIDC auth)
-	region        string // auth region (for refresh endpoint)
-	fileRegion    string // region from creds file (for API host)
+	region        string // auth region from config (for API host)
+	fileRegion    string // region from creds file (for OIDC refresh endpoint)
 	authType      AuthType
 
 	mu              sync.Mutex
@@ -99,14 +99,14 @@ func NewManager(refreshToken, region string) *Manager {
 	}
 }
 
-// Region returns the effective auth region.
+// Region returns the effective auth region (for API host).
 func (m *Manager) Region() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.region
 }
 
-// FileRegion returns the region from the credentials file (for API host).
+// FileRegion returns the region from the credentials file (for OIDC refresh endpoint).
 func (m *Manager) FileRegion() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -364,7 +364,13 @@ func (m *Manager) doOIDCRefresh() (accessToken string, expiresAt time.Time, newR
 
 // doOIDCRefreshInternal performs the actual OIDC refresh with retry logic.
 func (m *Manager) doOIDCRefreshInternal(retry bool) (accessToken string, expiresAt time.Time, newRefreshToken string, profileARN string, err error) {
-	refreshURL := fmt.Sprintf("https://oidc.%s.amazonaws.com/token", m.region)
+	// Use credentials file region for OIDC endpoint (may differ from API region)
+	// This matches Python kiro-gateway behavior: sso_region from creds file, api_region from config
+	oidcRegion := m.region
+	if m.fileRegion != "" {
+		oidcRegion = m.fileRegion
+	}
+	refreshURL := fmt.Sprintf("https://oidc.%s.amazonaws.com/token", oidcRegion)
 
 	// Build JSON payload (NOT form-urlencoded - AWS SSO OIDC requires JSON)
 	reqBody := oidcRefreshRequest{
