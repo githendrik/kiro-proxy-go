@@ -265,6 +265,9 @@ func (m *Manager) GetAccessToken() (string, error) {
 	m.accessToken = token
 	m.expiresAt = expiresAt
 	m.lastRefreshTime = time.Now()
+	if newRefreshToken != "" {
+		m.refreshToken = newRefreshToken
+	}
 	if profileARN != "" {
 		m.profileARN = profileARN
 	}
