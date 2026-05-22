@@ -174,16 +174,6 @@ func BuildKiroPayload(req *ChatCompletionRequest, profileARN string, fakeReasoni
 	// Extract system prompt
 	systemPrompt, messages := extractSystemPrompt(req.Messages)
 
-	// Inject thinking tags if fake reasoning is enabled
-	if fakeReasoning {
-		thinkingTag := fmt.Sprintf("<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>%d</max_thinking_length>", thinkingBudget)
-		if systemPrompt != "" {
-			systemPrompt = thinkingTag + "\n\n" + systemPrompt
-		} else {
-			systemPrompt = thinkingTag
-		}
-	}
-
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("no messages after system prompt extraction")
 	}
@@ -207,18 +197,40 @@ func BuildKiroPayload(req *ChatCompletionRequest, profileARN string, fakeReasoni
 	// Step 1: Convert OpenAI messages to unified format (tool messages become user messages with toolResults)
 	unified := convertToUnified(messages)
 
-	// Step 2: Merge adjacent same-role messages
+	// Step 2: Handle tool content based on whether tools are defined
+	// Kiro API rejects requests with toolResults but no tools defined
+	var convertedToolResults bool
+	if len(kiroTools) == 0 {
+		// No tools defined - convert all tool content to text representation
+		unified, convertedToolResults = stripAllToolContent(unified)
+	} else {
+		// Tools defined - ensure toolResults have preceding assistant with toolCalls
+		unified, convertedToolResults = ensureAssistantBeforeToolResults(unified)
+	}
+
+	// Inject thinking tags if fake reasoning is enabled
+	// Skip if tool results were converted (model doesn't know about tools)
+	if fakeReasoning && !convertedToolResults {
+		thinkingTag := fmt.Sprintf("<thinking_mode>enabled</thinking_mode>\n<max_thinking_length>%d</max_thinking_length>", thinkingBudget)
+		if systemPrompt != "" {
+			systemPrompt = thinkingTag + "\n\n" + systemPrompt
+		} else {
+			systemPrompt = thinkingTag
+		}
+	}
+
+	// Step 3: Merge adjacent messages with the same role
 	unified = mergeAdjacentMessages(unified)
 
-	// Step 3: Ensure first message is user
+	// Step 4: Ensure first message is user
 	if len(unified) > 0 && unified[0].Role != "user" {
 		unified = append([]unifiedMessage{{Role: "user", Content: "(empty)"}}, unified...)
 	}
 
-	// Step 4: Ensure alternating user/assistant roles
+	// Step 5: Ensure alternating user/assistant roles
 	unified = ensureAlternatingRoles(unified)
 
-	// Step 5: Split into history + currentMessage
+	// Step 6: Split into history + currentMessage
 	history, currentContent, currentToolResults := splitHistoryAndCurrent(unified, systemPrompt, req.Model)
 
 	// Build current message
@@ -229,10 +241,18 @@ func BuildKiroPayload(req *ChatCompletionRequest, profileARN string, fakeReasoni
 	}
 
 	// Attach tools and tool results to current message
-	if len(kiroTools) > 0 || len(currentToolResults) > 0 {
+	// If no tools defined, don't attach toolResults (they were converted to text)
+	if len(kiroTools) > 0 {
 		currentMsg.UserInputMessageContext = &KiroUserInputMsgContext{
 			Tools:       kiroTools,
 			ToolResults: currentToolResults,
+		}
+	} else if len(currentToolResults) > 0 {
+		// This shouldn't happen if stripAllToolContent worked correctly, but handle it
+		// by appending tool results to content as text
+		toolResultsText := toolResultsToText(currentToolResults)
+		if toolResultsText != "" {
+			currentMsg.Content = currentMsg.Content + "\n\n" + toolResultsText
 		}
 	}
 
@@ -515,6 +535,172 @@ func extractTextContent(content json.RawMessage) string {
 }
 
 
+
+// toolCallsToText converts tool calls to human-readable text representation.
+// Used when stripping tool content from messages (when no tools are defined).
+func toolCallsToText(toolCalls []ToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, tc := range toolCalls {
+		name := tc.Function.Name
+		args := tc.Function.Arguments
+		toolID := tc.ID
+
+		if toolID != "" {
+			parts = append(parts, fmt.Sprintf("[Tool: %s (%s)]\n%s", name, toolID, args))
+		} else {
+			parts = append(parts, fmt.Sprintf("[Tool: %s]\n%s", name, args))
+		}
+	}
+
+	return strings.Join(parts, "\n\n")
+}
+
+// toolResultsToText converts tool results to human-readable text representation.
+// Used when stripping tool content from messages (when no tools are defined).
+func toolResultsToText(toolResults []KiroToolResult) string {
+	if len(toolResults) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, tr := range toolResults {
+		contentText := ""
+		if len(tr.Content) > 0 {
+			contentText = tr.Content[0].Text
+		}
+		if contentText == "" {
+			contentText = "(empty result)"
+		}
+
+		if tr.ToolUseID != "" {
+			parts = append(parts, fmt.Sprintf("[Tool Result (%s)]\n%s", tr.ToolUseID, contentText))
+		} else {
+			parts = append(parts, fmt.Sprintf("[Tool Result]\n%s", contentText))
+		}
+	}
+
+	return strings.Join(parts, "\n\n")
+}
+
+// stripAllToolContent converts all tool-related content to text representation.
+// Used when no tools are defined in the request - Kiro API rejects requests
+// that have toolResults but no tools defined.
+// Returns the stripped messages and a boolean indicating if any tool content was converted.
+func stripAllToolContent(messages []unifiedMessage) ([]unifiedMessage, bool) {
+	if len(messages) == 0 {
+		return messages, false
+	}
+
+	result := make([]unifiedMessage, 0, len(messages))
+	totalToolCallsStripped := 0
+	totalToolResultsStripped := 0
+
+	for _, msg := range messages {
+		hasToolCalls := len(msg.ToolCalls) > 0
+		hasToolResults := len(msg.ToolResults) > 0
+
+		if hasToolCalls || hasToolResults {
+			if hasToolCalls {
+				totalToolCallsStripped += len(msg.ToolCalls)
+			}
+			if hasToolResults {
+				totalToolResultsStripped += len(msg.ToolResults)
+			}
+
+			var contentParts []string
+
+			if msg.Content != "" {
+				contentParts = append(contentParts, msg.Content)
+			}
+
+			if hasToolCalls {
+				toolText := toolCallsToText(msg.ToolCalls)
+				if toolText != "" {
+					contentParts = append(contentParts, toolText)
+				}
+			}
+
+			if hasToolResults {
+				resultText := toolResultsToText(msg.ToolResults)
+				if resultText != "" {
+					contentParts = append(contentParts, resultText)
+				}
+			}
+
+			content := msg.Content
+			if len(contentParts) > 0 {
+				content = strings.Join(contentParts, "\n\n")
+			}
+			if content == "" {
+				content = "(empty)"
+			}
+
+			cleanedMsg := unifiedMessage{
+				Role:    msg.Role,
+				Content: content,
+			}
+			result = append(result, cleanedMsg)
+		} else {
+			result = append(result, msg)
+		}
+	}
+
+	hadToolContent := totalToolCallsStripped > 0 || totalToolResultsStripped > 0
+
+	return result, hadToolContent
+}
+
+// ensureAssistantBeforeToolResults ensures that messages with toolResults
+// have a preceding assistant message with toolCalls.
+// Kiro API requires that when toolResults are present, there must be a
+// preceding assistantResponseMessage with toolUses.
+// Returns the processed messages and a boolean indicating if any tool results were converted.
+func ensureAssistantBeforeToolResults(messages []unifiedMessage) ([]unifiedMessage, bool) {
+	if len(messages) == 0 {
+		return messages, false
+	}
+
+	result := make([]unifiedMessage, 0, len(messages))
+	convertedAny := false
+
+	for _, msg := range messages {
+		if len(msg.ToolResults) > 0 {
+			hasPrecedingAssistant := false
+			if len(result) > 0 && result[len(result)-1].Role == "assistant" && len(result[len(result)-1].ToolCalls) > 0 {
+				hasPrecedingAssistant = true
+			}
+
+			if !hasPrecedingAssistant {
+				toolResultsText := toolResultsToText(msg.ToolResults)
+
+				newContent := msg.Content
+				if toolResultsText != "" {
+					if msg.Content != "" {
+						newContent = msg.Content + "\n\n" + toolResultsText
+					} else {
+						newContent = toolResultsText
+					}
+				}
+
+				cleanedMsg := unifiedMessage{
+					Role:    msg.Role,
+					Content: newContent,
+				}
+				result = append(result, cleanedMsg)
+				convertedAny = true
+				continue
+			}
+		}
+
+		result = append(result, msg)
+	}
+
+	return result, convertedAny
+}
 
 // sanitizeToolName ensures tool names are <= 64 chars and valid.
 func sanitizeToolName(name string) string {

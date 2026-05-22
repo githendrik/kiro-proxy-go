@@ -120,13 +120,16 @@ func TestBuildKiroPayload_ToolCall(t *testing.T) {
 		t.Fatal("Expected UserInputMessage in first history entry")
 	}
 
-	// Second history entry should be assistant with tool calls
+	// Second history entry should be assistant
+	// Note: tool calls are converted to text when no tools are defined (Kiro API requirement)
 	if payload.ConversationState.History[1].AssistantResponseMessage == nil {
 		t.Fatal("Expected AssistantResponseMessage in second history entry")
 	}
 
-	if len(payload.ConversationState.History[1].AssistantResponseMessage.ToolUses) != 1 {
-		t.Errorf("Expected 1 tool use, got %d", len(payload.ConversationState.History[1].AssistantResponseMessage.ToolUses))
+	// Tool call should be converted to text in content
+	content := payload.ConversationState.History[1].AssistantResponseMessage.Content
+	if !contains(content, "[Tool: calculator (call123)]") {
+		t.Errorf("Expected tool call converted to text, got '%s'", content)
 	}
 
 	// Current message should be "Continue" since last message was assistant
