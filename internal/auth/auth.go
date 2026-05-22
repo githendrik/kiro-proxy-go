@@ -621,17 +621,22 @@ func (m *Manager) ForceRefresh() error {
 	return nil
 }
 
-// BackgroundRefreshInterval is how often to refresh tokens in the background.
-// Set to 45 minutes to refresh before the 1-hour access token expires.
+// BackgroundRefreshInterval is how often to check if tokens need refresh.
+// Set to 15 minutes to catch expiring tokens before the 1-hour deadline.
 // NOTE: Python kiro-gateway uses ON-DEMAND refresh only (no background task).
-// We use a conservative background refresh as a safety net for idle periods.
-const BackgroundRefreshInterval = 45 * time.Minute
+// We use a conservative background check as a safety net for idle periods.
+const BackgroundRefreshInterval = 15 * time.Minute
+
+// RefreshTokenMaxAge is the maximum age for a refresh token before we proactively rotate it.
+// Set to 45 minutes to rotate refresh tokens before they expire (typically ~1 hour lifetime).
+const RefreshTokenMaxAge = 45 * time.Minute
 
 // StartBackgroundRefresh launches a goroutine that periodically refreshes tokens.
 // This prevents token expiration during extended idle periods.
 // NOTE: Python kiro-gateway uses ON-DEMAND refresh only (no background task).
-// We use background refresh as a safety net, but less frequently (45 min) to avoid
-// overusing refresh tokens.
+// We use background refresh as a safety net, with two strategies:
+// 1. Refresh access tokens when expiring soon (on-demand, like Python)
+// 2. Proactively rotate refresh tokens before they expire (every 45 min)
 // Call StopBackgroundRefresh() to stop the goroutine.
 func (m *Manager) StartBackgroundRefresh() {
 	m.mu.Lock()
@@ -654,13 +659,24 @@ func (m *Manager) StartBackgroundRefresh() {
 		for {
 			select {
 			case <-ticker.C:
-				// Try to refresh the token
-				// Use GetAccessToken() which only refreshes if expiring soon
-				_, err := m.GetAccessToken()
-				if err != nil {
-					slog.Warn("background token refresh failed", "error", err)
+				// Check if we should refresh
+				m.mu.Lock()
+				needsRefresh := m.isTokenExpiringSoon()
+				shouldRotateRefreshToken := !m.lastRefreshTime.IsZero() && time.Since(m.lastRefreshTime) > RefreshTokenMaxAge
+				m.mu.Unlock()
+
+				if needsRefresh || shouldRotateRefreshToken {
+					if shouldRotateRefreshToken {
+						slog.Info("proactively rotating refresh token (age > 45 min)")
+					}
+					_, err := m.GetAccessToken()
+					if err != nil {
+						slog.Warn("background token refresh failed", "error", err)
+					} else {
+						slog.Debug("background token refresh completed")
+					}
 				} else {
-					slog.Debug("background token refresh completed")
+					slog.Debug("background refresh check: tokens still valid")
 				}
 			case <-m.stopRefresh:
 				slog.Info("background token refresh stopped")
