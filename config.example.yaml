@@ -10,7 +10,8 @@ proxy_api_key: my-super-secret-password-123
 
 # Kiro credentials (use ONE of these methods)
 # Method 1: Credentials file (recommended)
-creds_file: ~/.aws/sso/cache/kiro-auth-token-cli.json
+# Use the Kiro desktop app token, or kiro-auth-token-cli.json if using kiro-cli
+creds_file: ~/.aws/sso/cache/kiro-auth-token.json
 
 # Method 2: Direct refresh token
 # refresh_token: your-refresh-token-here
